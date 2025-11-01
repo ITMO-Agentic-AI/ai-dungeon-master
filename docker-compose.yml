@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./src/data/storage:/app/src/data/storage
+      - ./logs:/app/logs
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  langgraph-dev:
+    build: .
+    ports:
+      - "8123:8123"
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src
+      - ./src/data/storage:/app/src/data/storage
+    command: langgraph dev --port 8123 --host 0.0.0.0
+    restart: unless-stopped

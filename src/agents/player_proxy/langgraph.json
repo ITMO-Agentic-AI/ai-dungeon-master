@@ -1,0 +1,8 @@
+{
+  "$schema": "https://langgra.ph/schema.json",
+  "dependencies": ["../../.."],
+  "graphs": {
+    "player_proxy": "./graph.py:graph"
+  },
+  "env": "../../../.env"
+}
