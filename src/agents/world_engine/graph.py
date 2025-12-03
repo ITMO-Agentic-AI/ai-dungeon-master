@@ -1,233 +1,316 @@
+# src/agents/world_engine/graph.py
+from typing import Any, Dict, List, Literal
+import uuid
 import json
-import re
-from typing import Any, Literal
+
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, END
 from langgraph.runtime import Runtime
-from src.core.types import GameState
+from pydantic import BaseModel, Field
+
+from src.core.types import GameState, WorldState, LocationNode, ActiveNPC, Region, KeyNPC
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
 
 
+class LocationNodeInput(BaseModel):
+    """
+    LLM生成用的临时Locaiton模型, 字段名更符合自然语言直觉
+    """
+    name: str
+    description: str
+    region_name: str
+    exits: str = Field(description="List of IDs of connected locations")
+
+class LocationBatch(BaseModel):
+    locations: List[LocationNodeInput]
+
+class WorldUpdateOutput(BaseModel):
+    time_passed_hours: int = Field(description="Hours passed since last event")
+    new_weather: str = Field(description="Current weather condition")
+    # description直接通过update_world返回给user, 或者存入world state
+
 class WorldEngineAgent(BaseAgent):
     """
-    Phase 1:
-    - 生成初始化的位置, 时间, 天气, 基础描述
-    Phase 3:
-    - 根据事件更新时间, 天气, 描述
+    WorldEngineAgent:
+    - 实例化: 将背景设定(区域/非玩家角色)转换为可玩地图(地点/活跃非玩家角色)
+    - 更新: 在游戏过程中管理时间, 天气和环境描述
     """
     def __init__(self):
         super().__init__("World Engine")
         self.model = model_service.get_model()
 
+        # 用于生成结构化输出的工具
+        self.location_gen_llm = self.model.with_structured_output(LocationBatch)
+        self.update_gen_llm = self.model.with_structured_output(WorldUpdateOutput)
+
     def build_graph(self) -> StateGraph:
         graph = StateGraph(GameState)
 
-        # 定义两个核心节点
-        graph.add_node("init_world", self.init_world)
+        # 添加节点
+        graph.add_node("instantiate_world", self.instantiate_world)
         graph.add_node("update_world", self.update_world)
 
-        # 路由逻辑
+        # 路由逻辑(Router)
         graph.add_conditional_edges(
             "__start__",
             self.route_step,
             {
-                "init": "init_world",
+                "instantiate": "instantiate_world",
                 "update": "update_world"
             }
         )
 
-        graph.add_edge("init_world", END)
+        # 添加边
+        graph.add_edge("instantiate_world", END)
         graph.add_edge("update_world", END)
 
         return graph
     
-    # 路由逻辑(Router)
-    def route_step(self, state: GameState) -> Literal["init", "update"]:
-        # 检查world是否已经初始化(查看有没有位置信息)
-        world = state.get("world", {})
-        if not world or "current_location" not in world:
-            return "init"
+    def route_step(self, state: GameState) -> Literal["instantiate", "update"]:
+        """
+        检查世界地图是否存在
+        如果不存在, 则创建它(instantiate), 如果存在, 则模拟环境(update)
+        """
+        world = state.get("world")
+
+        if not world:
+            return "instantiate"
+
+        if isinstance(world, dict):
+            has_regions = bool(world.get("regions"))
+            has_locations = bool(world.get("locations"))
+        else:
+            has_regions = bool(getattr(world, "regions", []))
+            has_locations = bool(getattr(world, "locations", {}))
+
+        if has_regions and not has_locations:
+            return "instantiate"
+        
         return "update"
 
     
-    # Phase 1: 世界初始化
-    async def init_world(self, state: GameState, runtime: Runtime) -> dict[str, Any]:
-        """根据Lore设定生成初始世界状态"""
+    # Phase 1: 初始化世界(Instantiate World, Map Generation)
+    async def instantiate_world(self, state: GameState) -> Dict[str, Any]:
+        """
+        Turns 'Lore' (Regions) into 'Locations' and places 'Active Entities'
+        """
+        print("--- [World Engine] Instantiating World Map & NPCs ---")
         
-        # 获取Lore Agent的输入(如果没有则为默认)
-        lore_summary = state.get("lore_summary", "A dark fantasy world ruled by dragonlords.")
-        
-        prompt = (
-            f"You are the World Engine for a D&D game.\n"
-            f"Task: Initialize the starting state based on this lore: '{lore_summary}'"
-            f"Requirements:\n"
-            f"1. Choose a starting location name.\n"
-            f"2. Set a starting time (0-23) and appropriate weather.\n"
-            f"3. Write a vivid scene description for the game start.\n\n"
-            f"Respond ONLY in valid JSON format:\n"
-            f"{{"
-            f"  \"current_location\": \"Location Name\",\n"
-            f"  \"time_of_day\": 8,\n"
-            f"  \"weather\": \"Sunny\",\n"
-            f"  \"Description\": \"Immersive description...\"\n"
-            f"}}"
-        )
+        world_state = state.get("world")
 
-        try:
-            print(f"DEBUG: Initializing World for -> {lore_summary[:50]}...")
-            response = await self.model.ainvoke(prompt)
-            content = response.content if hasattr(response, "content") else str(response)
-
-            # Re提取JSON
-            json_match = re.search(r"\{.*\}", content, re.DOTALL)
-            if json_match:
-                world_data = json.loads(json_match.group())
-            else:
-                raise ValueError("No JSON Found")
-        
-        except Exception as e:
-            print(f"ERROR: World Init Failed: {e}")
-            world_data = {
-                "current_location": "Village Tavern",
-                "time_of_day": 18,
-                "weather": "Rainy",
-                "Description": "You sit in a dimly lit tavern, rain hammering against the roof."
-            }
-        
-        # 写入world状态
-        return {
-            "world": world_data
-        }
-
-
-    # Phase 3: 更新世界
-    async def update_world(self, state: GameState, runtime: Runtime) -> dict[str, Any]:
-        # 1. 取出原始世界状态，避免直接修改原始对象
-        current_world = state.get("world", {}).copy()
-        # 获取当前基础数值
-        try:
-            curr_time = int(current_world.get("time_of_day", 10))
-        except (ValueError, TypeError):
-            curr_time = 10  # 如果转换失败，默认值为10点
-
-        curr_weather = current_world.get("weather", "sunny")
-        curr_location = current_world.get("current_location", "village square")
-
-        # 2. 获取上下文，理解刚刚发生了什么, 优先读取Messages
-        messages = state.get("messages", [])
-        # messages对象兼容处理
-        last_event = "The game session has just begun."
-
-        if messages and len(messages) > 0:
-            last_msg = messages[-1]
-            # 如果是对象则取.content, 字典取["content"], 字符串直接使用
-            if hasattr(last_msg, "content"):
-                last_event = last_msg.content
-            elif isinstance(last_msg, dict):
-                last_event = last_msg.get("content", str(last_msg))
-            else:
-                last_event = str(last_msg)
-        # 如果Message为空，尝试读取Actions列表
-        elif "Actions" in state and state["Actions"]:
-            last_event = str(state["Actions"][-1])
-
-        # 3. LLM决策，解析事件，用AI判断时间流逝和地点变化
-        analysis_prompt = (
-            f"You are the Game Engine. Analyze the World State changes based on the recent event. \n"
-            f"Current State:\n"
-            f"- Time: {curr_time}:00\n"
-            f"- Weather: {curr_weather}\n"
-            f"- Location: {curr_location}\n\n"
-            f"Recent Event: \"{last_event}\"\n\n"
-            f"Instructions:\n"
-            f"1. Did the location change in the event? If yes, extract the new location name.\n"
-            f"2. Did time pass? (e.g., 'short rest' = +1 hour, 'travel' = +hours). If unsure, assume 0.\n"
-            f"3. Did the weather change dramatically? If not, keep '{curr_weather}'.\n\n"
-            f"Respond ONLY in valid JSON format like this:\n"
-            f"{{\n"
-            f"  \"time_passed_hours\": 0, \n"
-            f"  \"new_location\": \"{curr_location}\",\n"
-            f"  \"new_weather\": \"{curr_weather}\"\n"
-            f"}}"
-        )
-
-        try:
-            # 调用模型
-            response = await self.model.ainvoke(analysis_prompt)
-            content = response.content if hasattr(response, "content") else str(response)
-            json_match = re.search(r"\{.*\}", content, re.DOTALL)
-            if json_match:
-                result = json.loads(json_match.group())
-            else:
-                raise ValueError("No JSON found in response")
-
-            # 解析结果
-            time_delta = int(result.get("time_passed_hours", 0))
-            next_location = result.get("new_location", curr_location)
-            next_weather = result.get("new_weather", curr_weather)
-        
-        except Exception as e:
-            # 如果模型解析失败，保持现状
-            print(f"World Engine Analysis Error: {e}")
-            time_delta = 0
-            next_location = curr_location
-            next_weather = curr_weather
-
-        # 计算新时间
-        next_time = (curr_time + time_delta) % 24
-
-        # 4. 生成环境描述，只有当环境发生实质变化才重新生成描述
-        state_changed = (
-            next_location != curr_location or
-            next_weather != curr_weather or
-            time_delta > 0
-        )
-
-        if state_changed or "Description" not in current_world:
-            desc_prompt = (
-                f"Describe the current scene in one immersive sentence.\n"
-                f"Location: {next_location}\n"
-                f"Time: {next_time}:00\n"
-                f"Weather: {next_weather}\n"
-                f"Focus on the sensory details (e.g. light, sound, smell)."
+        # 如果是空测试, world_state为None, 创造一个标准的默认世界设定
+        if not world_state:
+            print("DEBUG: No world state found, creating default test region.")
+            # 创建一个符合src/core/types.py定义的默认Region
+            default_region = Region(
+                name="The Shadow Realm",
+                description="A misty, gray dimension used for testing.",
+                dominant_factions=["Testers"],
+                key_landmarks=["The Debug Console"],
+                environmental_hook="Eternal Twilight"
             )
-            try:
-                desc_res = await self.model.ainvoke(desc_prompt)
-                new_description = desc_res.content if hasattr(desc_res, "content") else str(desc_res)
-            except:
-                new_description = "The world waits quietly."
+            # 初始化一个WorldState
+            world_state = WorldState(
+                regions=[default_region],
+                important_npcs=[]
+            )
+
+        regions_data = []
+        if isinstance(world_state, dict):
+            regions_data = world_state.get("regions", [])
         else:
-            new_description = current_world.get("Description", "")
+            regions_data = getattr(world_state, "regions", [])
+
+        desc_list = []
+        for r in regions_data:
+            if isinstance(r, dict):
+                r_name = r.get("name", "Unknown")
+                r_desc = r.get("description", "")
+                r_hook = r.get("environmental_hook", "")
+            else:
+                r_name = getattr(r, "name", "Unknown")
+                r_desc = getattr(r, "description", "")
+                r_hook = getattr(r, "environmental_hook", "")
+            desc_list.append(f"- {r_name}: {r_desc} ({r_hook})")
+
+        regions_desc = "\n".join(desc_list)
+
+        # 为每个区域生成地点
+        all_locations = {}
+
+        system_prompt = """You are the World Engine.
+        Your job is to break down broad 'Regions' into specific, navigable 'Location Nodes' for a text adventure game.
+        Establish connections (paths) between them to form a logical map.
+        Output strictly in JSON format."""
+
+        user_prompt = f"""
+        Context Regions:
+        {regions_desc}
+
+        Task:
+        Create 3 specific locations for EACH region listed above.
+        Output must constitute a valid JSON object matching the LocationBatch schema.
         
-        # 5. 更新状态，更新world字典
-        current_world.update({
-            "time_of_day": next_time,
-            "weather": next_weather,
-            "current_location": next_location,
-            "Description": new_description
+        # SCHEMA REQUIREMENTS:
+        - 'name': specific name.
+        - 'region_name': MUST match one of the Context Region names exactly.
+        - 'description': 1 vivid sentence.
+        - 'exits': A comma-separated STRING of connected location IDs.
+           - Example: "loc_forest_edge, loc_cave_mouth"
+        """
+
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt)
+        ]
+
+        # 调用LLM, 这个函数会返回LocationBatch对象
+        result = await self.location_gen_llm.ainvoke(messages)
+
+        # 转换为内部LocationNode类型并进行索引
+        for loc_input in result.locations:
+            # 生成一个干净的ID
+            loc_id = f"loc_{uuid.uuid4().hex[:8]}"
+
+            raw_exits = loc_input.exits
+            if raw_exits:
+                connected_ids = [e.strip() for e in raw_exits.split(",") if e.strip()]
+            else:
+                connected_ids = []
+
+            # Map 'exits' (LLM term) to 'connected_ids' (Internal term)
+            new_node = LocationNode(
+                id = loc_id,
+                name = loc_input.name,
+                region_name = loc_input.region_name,
+                description = loc_input.description,
+                connected_ids = connected_ids,
+                npc_ids = [],
+                clues = []
+            )
+            all_locations[loc_id] = new_node
+        
+        # 放置NPC(将背景故事中的NPC映射到实际游戏中的NPC)
+        active_npcs = {}
+        lore_npcs = world_state.important_npcs or []
+
+        for npc in lore_npcs:
+            start_loc_id = None
+
+            # 简单的匹配逻辑: 找到一个与NPC所在区域匹配的位置
+            for loc_id, loc in all_locations.items():
+                if npc.region and (loc.region_name.lower() in npc.region.lower() or npc.region.lower() in loc.region_name.lower()):
+                    start_loc_id = loc_id
+                    break
+
+            # 备选: 选择第一个可用的位置
+            if not start_loc_id and all_locations:
+                start_loc_id = list(all_locations.keys())[0]
+
+            if start_loc_id:
+                npc_id = f"npc_{uuid.uuid4().hex[:8]}"
+                new_active_npc = ActiveNPC(
+                    id=npc_id,
+                    base_data=npc,
+                    current_location_id=start_loc_id,
+                    current_activity="Standing by",
+                    status="Alive"
+                )
+                active_npcs[npc_id] = new_active_npc
+
+                # 更新位置信息以记录NPC的存在
+                if npc_id not in all_locations[start_loc_id].npc_ids:
+                    all_locations[start_loc_id].npc_ids.append(npc_id)
+        
+        # 返回更新后的世界状态, 创建一个副本确保Pydantic验证通过
+        updated_world = world_state.model_copy(update={
+            "locations": all_locations,
+            "active_npcs": active_npcs,
+            "global_time": 8,  # 早上8点开始
+            "weather": "Clear"
         })
 
-        # 记录这次更新的操作日志
-        logs = state.get("Logs", {}).copy()
-        logs["World_Update"] = {
-            "Trigger_Event": last_event[:50] + "...",  # 只记录前50个字符作为摘要
-            "Time_Shift": time_delta,
-            "New_Location": next_location
-        }
+        return {"world": updated_world}
+    
 
-        # 返回新的完整状态
-        # 注意：这里我们返回update后的字典，LangGraph会负责含并
-        return {
-            "world": current_world,
-            "Logs": logs
-        }
+    # Phase 3: 更新世界(Time & Weather)
+    async def update_world(self, state: GameState) -> Dict[str, Any]:
+        """
+        分析上一个事件, 以推进时间和天气变化
+        """
+        world_state = state.get("world")
+        # 避免报错
+        if not world_state:
+            return {}
 
-    async def process(self, state: GameState, runtime: Runtime = None) -> dict[str, Any]:
-        step = self.route_step(state)
-        if step == "init":
-            return await self.init_world(state, runtime)
+        if isinstance(world_state, dict):
+            curr_time = world_state.get("global_time", 8)
+            curr_weather = world_state.get("weather", "Clear")
         else:
-            return await self.update_world(state, runtime)
+            curr_time = getattr(world_state, "global_time", 8)
+            curr_weather = getattr(world_state, "weather", "Clear")
+        
+        messages = state.get("messages", [])
 
+        # 安全获得之前的信息
+        last_event = "The game begins."
+        if messages:
+            last_msg = messages[-1]
+            # 处理不同类型的消息
+            if isinstance(last_msg, dict):
+                last_event = last_msg.get("content", str(last_msg))
+            else:
+                last_event = getattr(last_msg, "content", str(last_msg))
+        
+        system_prompt = "You are the Game Simulation Engine. Analyze the event to update world time and weather. Output JSON."
+        user_prompt = f"""
+        Current Time: {curr_time}:00
+        Current Weather: {curr_weather}
+        Recent Event: "{last_event}"
+
+        Task:
+        1. Determine how much time passed (in hours). Combat/Talking ~ 0. Travel/Rest ~ 1-8.
+        2. Determine if weather changes (keep it consistent unless drastic change implies it).
+        """
+
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt)
+        ]
+
+        # 调用大模型, 这个会返回WorldUpdateOutput对象
+        try:
+            result = await self.update_gen_llm.ainvoke(messages)
+            time_delta = result.time_passed_hours
+            new_weather = result.new_weather
+        except Exception as e:
+            print(f"World update failed, using defaults: {e}")
+            time_delta = 0
+            new_weather = curr_weather
+
+        # Update Time
+        new_time = (curr_time + time_delta) % 24
+
+        if isinstance(world_state, dict):
+            updated_world = world_state.copy()
+            updated_world["global_time"] = new_time
+            updated_world["weather"] = new_weather
+            return {"world": updated_world}
+        else:
+            updated_world = world_state.model_copy(update={
+                "global_time": new_time,
+                "weather": new_weather
+            })
+            return {"world": updated_world}
+    
+    async def process(self, state: GameState, runtime: Runtime = None) -> Dict[str, Any]:
+        step = self.route_step(state)
+        if step == "instantiate":
+            return await self.instantiate_world(state)
+        else:
+            return await self.update_world(state)
+    
 
 graph = WorldEngineAgent().compile()

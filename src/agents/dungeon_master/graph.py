@@ -1,11 +1,13 @@
-from typing import Any
+# src/agents/dungeon_master/graph.py
+
+from typing import Any, Dict
+from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph
-from langgraph.runtime import Runtime
 from langchain_core.messages import AIMessage
+
 from src.core.types import GameState
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
-
 
 class DungeonMasterAgent(BaseAgent):
     def __init__(self):
@@ -14,31 +16,64 @@ class DungeonMasterAgent(BaseAgent):
 
     def build_graph(self) -> StateGraph:
         graph = StateGraph(GameState)
-        graph.add_node("narrate", self.narrate)
-        graph.add_edge("__start__", "narrate")
+        graph.add_node("narrate_outcome", self.narrate_outcome)
+        graph.add_edge("__start__", "narrate_outcome")
         return graph
 
-    async def narrate(self, state: GameState, runtime: Runtime) -> dict[str, Any]:
-        narrative = state.get("narrative")
-        world = state.get("world")
-        players = state.get("players", [])
-        actions = state.get("actions", [])
+    async def narrate_outcome(self, state: GameState) -> Dict[str, Any]:
+        """
+        Phase 7b: The Narrator.
+        Synthesizes the mechanical outcome + director instructions into prose.
+        """
+        outcome = state.get("last_outcome")
+        directives = state.get("director_directives")
+        action = state.get("current_action")
 
-        context = f"""
-Scene: {narrative.current_scene if narrative else "Unknown"}
-Location: {world.current_location if world else "Unknown"}
-Players: {", ".join(p.name for p in players)}
-Recent Actions: {actions[-3:] if actions else "None"}
+        if not outcome:
+            return {"messages": [AIMessage(content="The world waits for your action.")]}
 
-Narrate the scene to the players.
-"""
+        # --- Fix: Get actor's location ---
+        player_map = {p.id: p for p in state['players']}
+        actor_location = 'Unknown'
+        if action and action.player_id in player_map:
+            actor_loc_id = player_map[action.player_id].location_id
+            actor_location = state['world'].locations.get(actor_loc_id, 'Unknown')
+        # --- End Fix ---
 
-        response = await self.model.ainvoke(context)
+        system_prompt = """You are the Dungeon Master.
+        Describe the results of the player's action vividly and immersively.
 
-        return {"messages": [AIMessage(content=response.content, name="DungeonMaster")]}
+        Inputs to consider:
+        1. Mechanical Outcome: What actually happened (Success/Failure).
+        2. Director's Note: Tone and focus (e.g., "Make it scary").
+        3. World State: Use the location description and active NPCs.
 
-    async def process(self, state: GameState, runtime: Runtime = None) -> dict[str, Any]:
-        return await self.narrate(state, runtime)
+        Format:
+        - Use bold for key items or sudden events.
+        - Use > blockquotes for NPC dialogue.
+        - Keep it under 200 words.
+        """
 
+        context_block = f"""
+        Player Action: {action.description}
+        Result: {outcome.narrative_result} (Success: {outcome.success})
 
-graph = DungeonMasterAgent().compile()
+        Director's Focus: {directives.narrative_focus if directives else 'Neutral'}
+        Director's Note: {directives.next_beat if directives else 'Continue story'}
+
+        Current Location: {actor_location} # Use the fixed location
+        """
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+            ("user", f"Narrate this:\n{context_block}")
+        ])
+
+        response = await self.model.ainvoke(prompt)
+
+        return {
+            "messages": [response]
+        }
+
+    async def process(self, state: GameState) -> Dict[str, Any]:
+        return await self.narrate_outcome(state)
