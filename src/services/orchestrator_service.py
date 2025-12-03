@@ -10,7 +10,9 @@ from src.core.types import GameState
 from src.agents.story_architect.graph import StoryArchitectAgent
 from src.agents.lore_builder.graph import LoreBuilderAgent
 from src.agents.world_engine.graph import WorldEngineAgent
-from src.agents.player_proxy.graph import PlayerCreatorAgent # Corrected import
+
+from src.agents.player_proxy.graph import PlayerProxyAgent  # Corrected import
+
 from src.agents.action_resolver.graph import ActionResolverAgent
 from src.agents.rule_judge.graph import JudgeAgent
 from src.agents.director.graph import DirectorAgent
@@ -26,7 +28,7 @@ class OrchestratorService:
         self.architect = StoryArchitectAgent()
         self.lore_builder = LoreBuilderAgent()
         self.world_engine = WorldEngineAgent()
-        self.player_creator = PlayerCreatorAgent() # Corrected instantiation
+        self.player_creator = PlayerProxyAgent() # Corrected instantiation
 
         self.resolver = ActionResolverAgent()
         self.judge = JudgeAgent()
@@ -39,8 +41,8 @@ class OrchestratorService:
         # REGISTER NODES
         builder.add_node("story_architect", self.architect.plan_narrative)
         builder.add_node("lore_builder", self.lore_builder.build_lore)
-        builder.add_node("world_engine", self.world_engine.instantiate_world)
-        builder.add_node("player_creator", self.player_creator.create_characters)
+        builder.add_node("world_engine", self.world_engine.process)  # 调用process因为world_engine内部有router判断
+        builder.add_node("player_creator", self.player_creator.process)  # 调用process因为player_proxy内部有router判断
 
         builder.add_node("action_resolver", self.resolver.resolve_action)
         builder.add_node("judge", self.judge.evaluate_turn)
