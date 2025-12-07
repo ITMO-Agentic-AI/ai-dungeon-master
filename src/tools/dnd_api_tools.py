@@ -7,6 +7,7 @@ settings = get_settings()
 
 @tool
 async def get_spell_info(spell_name: str) -> dict:
+    """Get D&D 5e spell information from the API."""
     async with httpx.AsyncClient() as client:
         spell_slug = spell_name.lower().replace(" ", "-")
         response = await client.get(f"{settings.dnd_api_base_url}/spells/{spell_slug}")
@@ -17,6 +18,7 @@ async def get_spell_info(spell_name: str) -> dict:
 
 @tool
 async def get_monster_info(monster_name: str) -> dict:
+    """Get D&D 5e monster stats from the API."""
     async with httpx.AsyncClient() as client:
         monster_slug = monster_name.lower().replace(" ", "-")
         response = await client.get(f"{settings.dnd_api_base_url}/monsters/{monster_slug}")
@@ -27,6 +29,7 @@ async def get_monster_info(monster_name: str) -> dict:
 
 @tool
 async def get_equipment_info(equipment_name: str) -> dict:
+    """Get D&D 5e equipment details from the API."""
     async with httpx.AsyncClient() as client:
         equipment_slug = equipment_name.lower().replace(" ", "-")
         response = await client.get(f"{settings.dnd_api_base_url}/equipment/{equipment_slug}")
@@ -37,6 +40,7 @@ async def get_equipment_info(equipment_name: str) -> dict:
 
 @tool
 async def get_class_info(class_name: str) -> dict:
+    """Get D&D 5e class features and abilities from the API."""
     async with httpx.AsyncClient() as client:
         class_slug = class_name.lower()
         response = await client.get(f"{settings.dnd_api_base_url}/classes/{class_slug}")
@@ -47,6 +51,7 @@ async def get_class_info(class_name: str) -> dict:
 
 @tool
 async def get_race_info(race_name: str) -> dict:
+    """Get D&D 5e race traits and abilities from the API."""
     async with httpx.AsyncClient() as client:
         race_slug = race_name.lower().replace(" ", "-")
         response = await client.get(f"{settings.dnd_api_base_url}/races/{race_slug}")

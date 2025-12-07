@@ -17,6 +17,8 @@ python-dotenv = "^1.0.0"
 langchain = "^1.0.3"
 langgraph = "^1.0.2"
 langchain-openai = "^1.0.1"
+langchain-anthropic = "^1.0.0"
+langchain-ollama = "^1.0.0"
 
 [tool.poetry.group.dev.dependencies]
 langgraph-cli = {extras = ["inmem"], version = "^0.4.5"}

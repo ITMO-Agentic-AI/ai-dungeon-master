@@ -1,13 +1,13 @@
 # src/agents/dungeon_master/graph.py
 
 from typing import Any, Dict
-from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
 
 from src.core.types import GameState
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
+
 
 class DungeonMasterAgent(BaseAgent):
     def __init__(self):
@@ -33,11 +33,11 @@ class DungeonMasterAgent(BaseAgent):
             return {"messages": [AIMessage(content="The world waits for your action.")]}
 
         # --- Fix: Get actor's location ---
-        player_map = {p.id: p for p in state['players']}
-        actor_location = 'Unknown'
+        player_map = {p.id: p for p in state["players"]}
+        actor_location = "Unknown"
         if action and action.player_id in player_map:
             actor_loc_id = player_map[action.player_id].location_id
-            actor_location = state['world'].locations.get(actor_loc_id, 'Unknown')
+            actor_location = state["world"].locations.get(actor_loc_id, "Unknown")
         # --- End Fix ---
 
         system_prompt = """You are the Dungeon Master.
@@ -64,16 +64,14 @@ class DungeonMasterAgent(BaseAgent):
         Current Location: {actor_location} # Use the fixed location
         """
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", system_prompt),
-            ("user", f"Narrate this:\n{context_block}")
-        ])
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=f"Narrate this:\n{context_block}")
+        ]
 
-        response = await self.model.ainvoke(prompt)
+        response = await self.model.ainvoke(messages)
 
-        return {
-            "messages": [response]
-        }
+        return {"messages": [response]}
 
     async def process(self, state: GameState) -> Dict[str, Any]:
         return await self.narrate_outcome(state)

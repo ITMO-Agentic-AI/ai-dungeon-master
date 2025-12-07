@@ -3,7 +3,6 @@ from typing import Any, Dict, List, Literal
 import uuid
 import json
 
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, END
 from langgraph.runtime import Runtime
@@ -12,24 +11,25 @@ from pydantic import BaseModel, Field
 from src.core.types import GameState, WorldState, LocationNode, ActiveNPC, Region, KeyNPC
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
+from src.services.structured_output import get_structured_output
 
 
 class LocationNodeInput(BaseModel):
-    """
-    LLM生成用的临时Locaiton模型, 字段名更符合自然语言直觉
-    """
     name: str
     description: str
     region_name: str
     exits: str = Field(description="List of IDs of connected locations")
 
+
 class LocationBatch(BaseModel):
     locations: List[LocationNodeInput]
+
 
 class WorldUpdateOutput(BaseModel):
     time_passed_hours: int = Field(description="Hours passed since last event")
     new_weather: str = Field(description="Current weather condition")
     # description直接通过update_world返回给user, 或者存入world state
+
 
 class WorldEngineAgent(BaseAgent):
     """
@@ -37,13 +37,10 @@ class WorldEngineAgent(BaseAgent):
     - 实例化: 将背景设定(区域/非玩家角色)转换为可玩地图(地点/活跃非玩家角色)
     - 更新: 在游戏过程中管理时间, 天气和环境描述
     """
+
     def __init__(self):
         super().__init__("World Engine")
         self.model = model_service.get_model()
-
-        # 用于生成结构化输出的工具
-        self.location_gen_llm = self.model.with_structured_output(LocationBatch)
-        self.update_gen_llm = self.model.with_structured_output(WorldUpdateOutput)
 
     def build_graph(self) -> StateGraph:
         graph = StateGraph(GameState)
@@ -56,10 +53,7 @@ class WorldEngineAgent(BaseAgent):
         graph.add_conditional_edges(
             "__start__",
             self.route_step,
-            {
-                "instantiate": "instantiate_world",
-                "update": "update_world"
-            }
+            {"instantiate": "instantiate_world", "update": "update_world"},
         )
 
         # 添加边
@@ -67,7 +61,7 @@ class WorldEngineAgent(BaseAgent):
         graph.add_edge("update_world", END)
 
         return graph
-    
+
     def route_step(self, state: GameState) -> Literal["instantiate", "update"]:
         """
         检查世界地图是否存在
@@ -87,17 +81,16 @@ class WorldEngineAgent(BaseAgent):
 
         if has_regions and not has_locations:
             return "instantiate"
-        
+
         return "update"
 
-    
     # Phase 1: 初始化世界(Instantiate World, Map Generation)
     async def instantiate_world(self, state: GameState) -> Dict[str, Any]:
         """
         Turns 'Lore' (Regions) into 'Locations' and places 'Active Entities'
         """
         print("--- [World Engine] Instantiating World Map & NPCs ---")
-        
+
         world_state = state.get("world")
 
         # 如果是空测试, world_state为None, 创造一个标准的默认世界设定
@@ -109,13 +102,10 @@ class WorldEngineAgent(BaseAgent):
                 description="A misty, gray dimension used for testing.",
                 dominant_factions=["Testers"],
                 key_landmarks=["The Debug Console"],
-                environmental_hook="Eternal Twilight"
+                environmental_hook="Eternal Twilight",
             )
             # 初始化一个WorldState
-            world_state = WorldState(
-                regions=[default_region],
-                important_npcs=[]
-            )
+            world_state = WorldState(regions=[default_region], important_npcs=[])
 
         regions_data = []
         if isinstance(world_state, dict):
@@ -161,13 +151,9 @@ class WorldEngineAgent(BaseAgent):
            - Example: "loc_forest_edge, loc_cave_mouth"
         """
 
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt)
-        ]
+        messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
 
-        # 调用LLM, 这个函数会返回LocationBatch对象
-        result = await self.location_gen_llm.ainvoke(messages)
+        result = await get_structured_output(self.model, messages, LocationBatch)
 
         # 转换为内部LocationNode类型并进行索引
         for loc_input in result.locations:
@@ -182,16 +168,16 @@ class WorldEngineAgent(BaseAgent):
 
             # Map 'exits' (LLM term) to 'connected_ids' (Internal term)
             new_node = LocationNode(
-                id = loc_id,
-                name = loc_input.name,
-                region_name = loc_input.region_name,
-                description = loc_input.description,
-                connected_ids = connected_ids,
-                npc_ids = [],
-                clues = []
+                id=loc_id,
+                name=loc_input.name,
+                region_name=loc_input.region_name,
+                description=loc_input.description,
+                connected_ids=connected_ids,
+                npc_ids=[],
+                clues=[],
             )
             all_locations[loc_id] = new_node
-        
+
         # 放置NPC(将背景故事中的NPC映射到实际游戏中的NPC)
         active_npcs = {}
         lore_npcs = world_state.important_npcs or []
@@ -201,7 +187,10 @@ class WorldEngineAgent(BaseAgent):
 
             # 简单的匹配逻辑: 找到一个与NPC所在区域匹配的位置
             for loc_id, loc in all_locations.items():
-                if npc.region and (loc.region_name.lower() in npc.region.lower() or npc.region.lower() in loc.region_name.lower()):
+                if npc.region and (
+                    loc.region_name.lower() in npc.region.lower()
+                    or npc.region.lower() in loc.region_name.lower()
+                ):
                     start_loc_id = loc_id
                     break
 
@@ -216,24 +205,25 @@ class WorldEngineAgent(BaseAgent):
                     base_data=npc,
                     current_location_id=start_loc_id,
                     current_activity="Standing by",
-                    status="Alive"
+                    status="Alive",
                 )
                 active_npcs[npc_id] = new_active_npc
 
                 # 更新位置信息以记录NPC的存在
                 if npc_id not in all_locations[start_loc_id].npc_ids:
                     all_locations[start_loc_id].npc_ids.append(npc_id)
-        
+
         # 返回更新后的世界状态, 创建一个副本确保Pydantic验证通过
-        updated_world = world_state.model_copy(update={
-            "locations": all_locations,
-            "active_npcs": active_npcs,
-            "global_time": 8,  # 早上8点开始
-            "weather": "Clear"
-        })
+        updated_world = world_state.model_copy(
+            update={
+                "locations": all_locations,
+                "active_npcs": active_npcs,
+                "global_time": 8,  # 早上8点开始
+                "weather": "Clear",
+            }
+        )
 
         return {"world": updated_world}
-    
 
     # Phase 3: 更新世界(Time & Weather)
     async def update_world(self, state: GameState) -> Dict[str, Any]:
@@ -251,7 +241,7 @@ class WorldEngineAgent(BaseAgent):
         else:
             curr_time = getattr(world_state, "global_time", 8)
             curr_weather = getattr(world_state, "weather", "Clear")
-        
+
         messages = state.get("messages", [])
 
         # 安全获得之前的信息
@@ -263,7 +253,7 @@ class WorldEngineAgent(BaseAgent):
                 last_event = last_msg.get("content", str(last_msg))
             else:
                 last_event = getattr(last_msg, "content", str(last_msg))
-        
+
         system_prompt = "You are the Game Simulation Engine. Analyze the event to update world time and weather. Output JSON."
         user_prompt = f"""
         Current Time: {curr_time}:00
@@ -275,14 +265,10 @@ class WorldEngineAgent(BaseAgent):
         2. Determine if weather changes (keep it consistent unless drastic change implies it).
         """
 
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt)
-        ]
+        messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
 
-        # 调用大模型, 这个会返回WorldUpdateOutput对象
         try:
-            result = await self.update_gen_llm.ainvoke(messages)
+            result = await get_structured_output(self.model, messages, WorldUpdateOutput)
             time_delta = result.time_passed_hours
             new_weather = result.new_weather
         except Exception as e:
@@ -299,18 +285,17 @@ class WorldEngineAgent(BaseAgent):
             updated_world["weather"] = new_weather
             return {"world": updated_world}
         else:
-            updated_world = world_state.model_copy(update={
-                "global_time": new_time,
-                "weather": new_weather
-            })
+            updated_world = world_state.model_copy(
+                update={"global_time": new_time, "weather": new_weather}
+            )
             return {"world": updated_world}
-    
+
     async def process(self, state: GameState, runtime: Runtime = None) -> Dict[str, Any]:
         step = self.route_step(state)
         if step == "instantiate":
             return await self.instantiate_world(state)
         else:
             return await self.update_world(state)
-    
 
-graph = WorldEngineAgent().compile()
+
+graph = WorldEngineAgent().build_graph().compile()

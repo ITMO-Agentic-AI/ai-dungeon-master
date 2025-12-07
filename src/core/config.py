@@ -3,8 +3,6 @@ from functools import lru_cache
 
 
 class Settings(BaseSettings):
-    anthropic_api_key: str = ""
-    openai_api_key: str = ""
     langsmith_api_key: str = ""
     langsmith_project: str = "ai-dungeon-master"
 
@@ -13,7 +11,7 @@ class Settings(BaseSettings):
     custom_model_api_key: str = ""
     custom_model_name: str = "qwen3-32b"
 
-    model_name: str = "claude-sonnet-4-20250514"
+    model_name: str = "qwen3-32b"
     model_temperature: float = 0.7
 
     dnd_api_base_url: str = "https://www.dnd5eapi.co/api"

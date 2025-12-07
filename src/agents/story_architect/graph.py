@@ -1,16 +1,16 @@
-from typing import Any, Dict
-from langchain_core.prompts import ChatPromptTemplate
+from typing import Any
 from langgraph.graph import StateGraph
-from pydantic import BaseModel, Field
 from src.core.types import GameState, NarrativeState, CampaignBlueprint
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
+from src.services.structured_output import get_structured_output
+from langchain_core.messages import SystemMessage, HumanMessage
+
 
 class StoryArchitectAgent(BaseAgent):
     def __init__(self):
         super().__init__("Story Architect")
         self.model = model_service.get_model()
-        self.structured_llm = self.model.with_structured_output(CampaignBlueprint)
 
     def build_graph(self) -> StateGraph:
         graph = StateGraph(GameState)
@@ -18,12 +18,15 @@ class StoryArchitectAgent(BaseAgent):
         graph.add_edge("__start__", "plan_narrative")
         return graph
 
-    async def plan_narrative(self, state: GameState) -> Dict[str, Any]:
+    async def plan_narrative(self, state: GameState) -> dict[str, Any]:
         """
         Step 1: High-Level Story & World Blueprint using Storyteller principles.
         Generates a structured storyline with SVO events and initial narrative entities.
         """
         setting = state["setting"]
+        theme = setting.theme if hasattr(setting, 'theme') else setting.get('theme', 'Fantasy')
+        player_concepts = setting.player_concepts if hasattr(setting, 'player_concepts') else setting.get('player_concepts', [])
+        story_length = setting.story_length if hasattr(setting, 'story_length') else setting.get('story_length', 2000)
 
         system_prompt = """You are an expert AI Story Architect using the STORYTELLER framework.
         Create a high-level campaign blueprint ensuring narrative coherence and logical consistency.
@@ -31,9 +34,9 @@ class StoryArchitectAgent(BaseAgent):
         Define initial Narrative Entities (Characters, Locations, Items) and their starting states/relationships."""
 
         user_prompt = f"""
-        Theme: {setting.theme}
-        Player Characters: {', '.join(setting.player_concepts)}
-        Target Length: {setting.story_length} words equivalent
+        Theme: {theme}
+        Player Characters: {', '.join(player_concepts)}
+        Target Length: {story_length} words equivalent
 
         Generate a campaign blueprint including:
         1. A Title and Tagline.
@@ -55,13 +58,14 @@ class StoryArchitectAgent(BaseAgent):
         Focus on creating a logically connected sequence of events and well-defined initial entities.
         """
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", system_prompt),
-            ("user", user_prompt)
-        ])
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt)
+        ]
 
-        chain = prompt | self.structured_llm
-        blueprint: CampaignBlueprint = await chain.ainvoke({})
+        blueprint: CampaignBlueprint = await get_structured_output(
+            self.model, messages, CampaignBlueprint
+        )
 
         new_narrative = NarrativeState(
             title=blueprint.title,
@@ -70,10 +74,10 @@ class StoryArchitectAgent(BaseAgent):
             storyline=blueprint.storyline,
             narrative_entities={entity.id: entity for entity in blueprint.initial_entities},
             current_scene="start",
-            narrative_tension=0.1
+            narrative_tension=0.1,
         )
 
         return {"narrative": new_narrative}
 
-    async def process(self, state: GameState) -> Dict[str, Any]:
+    async def process(self, state: GameState) -> dict[str, Any]:
         return await self.plan_narrative(state)
