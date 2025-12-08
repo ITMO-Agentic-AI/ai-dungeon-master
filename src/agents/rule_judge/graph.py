@@ -1,23 +1,27 @@
 # src/agents/rule_judge/graph.py
 
 from typing import Any, Dict
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph
 from pydantic import BaseModel
 
 from src.core.types import GameState, JudgeVerdict, EvaluationMetrics
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
-from src.tools.dnd_api_tools import get_spell_info, get_equipment_info, get_class_info, get_race_info
+from src.services.structured_output import get_structured_output
+from src.tools.dnd_api_tools import (
+    get_spell_info,
+    get_equipment_info,
+    get_class_info,
+    get_race_info,
+)
 from src.tools.game_tools import roll_dice
+
 
 class JudgeAgent(BaseAgent):
     def __init__(self):
         super().__init__("Judge")
         self.model = model_service.get_model()
-        self.structured_llm = self.model.with_structured_output(JudgeVerdict)
-        # Optional: Bind tools to model if the LLM itself should call them
-        # self.judge_model_with_tools = self.model.bind_tools([...])
 
     def build_graph(self) -> StateGraph:
         graph = StateGraph(GameState)
@@ -48,18 +52,27 @@ class JudgeAgent(BaseAgent):
 
         if "cast" in action.description.lower() or "spell" in action.description.lower():
             import re
-            spell_match = re.search(r"cast ['\"]?([^'\"]+?)['\"]?", action.description, re.IGNORECASE)
+
+            spell_match = re.search(
+                r"cast ['\"]?([^'\"]+?)['\"]?", action.description, re.IGNORECASE
+            )
             if not spell_match:
-                 spell_match = re.search(r"spell ['\"]?([^'\"]+?)['\"]?", action.description, re.IGNORECASE)
+                spell_match = re.search(
+                    r"spell ['\"]?([^'\"]+?)['\"]?", action.description, re.IGNORECASE
+                )
 
             if spell_match:
                 spell_name = spell_match.group(1)
                 try:
                     spell_info = await get_spell_info.ainvoke({"spell_name": spell_name})
                     if "error" in spell_info:
-                        api_checks.append(f"API Check: Spell '{spell_name}' not found in D&D database.")
+                        api_checks.append(
+                            f"API Check: Spell '{spell_name}' not found in D&D database."
+                        )
                         correction_needed = True
-                        correction_suggestions.append(f"The spell '{spell_name}' does not exist. Please choose a valid spell.")
+                        correction_suggestions.append(
+                            f"The spell '{spell_name}' does not exist. Please choose a valid spell."
+                        )
                     else:
                         api_checks.append(f"API Check: Spell '{spell_name}' verified.")
                 except Exception as e:
@@ -67,18 +80,27 @@ class JudgeAgent(BaseAgent):
 
         if "attack with" in action.description.lower() or "hit with" in action.description.lower():
             import re
-            weapon_match = re.search(r"attack with ['\"]?([^'\"]+?)['\"]?", action.description, re.IGNORECASE)
+
+            weapon_match = re.search(
+                r"attack with ['\"]?([^'\"]+?)['\"]?", action.description, re.IGNORECASE
+            )
             if not weapon_match:
-                weapon_match = re.search(r"hit with ['\"]?([^'\"]+?)['\"]?", action.description, re.IGNORECASE)
+                weapon_match = re.search(
+                    r"hit with ['\"]?([^'\"]+?)['\"]?", action.description, re.IGNORECASE
+                )
 
             if weapon_match:
                 weapon_name = weapon_match.group(1)
                 try:
                     weapon_info = await get_equipment_info.ainvoke({"equipment_name": weapon_name})
                     if "error" in weapon_info:
-                        api_checks.append(f"API Check: Weapon '{weapon_name}' not found in D&D database.")
+                        api_checks.append(
+                            f"API Check: Weapon '{weapon_name}' not found in D&D database."
+                        )
                         correction_needed = True
-                        correction_suggestions.append(f"The weapon '{weapon_name}' does not exist. Please choose a valid weapon.")
+                        correction_suggestions.append(
+                            f"The weapon '{weapon_name}' does not exist. Please choose a valid weapon."
+                        )
                     else:
                         api_checks.append(f"API Check: Weapon '{weapon_name}' verified.")
                 except Exception as e:
@@ -87,9 +109,11 @@ class JudgeAgent(BaseAgent):
         if actor:
             class_name = actor.class_name
             if "cast" in action.description.lower() and class_name.lower() in ["fighter", "rogue"]:
-                 api_checks.append(f"Rule Check: Class '{class_name}' typically cannot cast spells.")
-                 correction_needed = True
-                 correction_suggestions.append(f"Characters of class '{class_name}' usually cannot cast spells. Please reconsider the action or character build.")
+                api_checks.append(f"Rule Check: Class '{class_name}' typically cannot cast spells.")
+                correction_needed = True
+                correction_suggestions.append(
+                    f"Characters of class '{class_name}' usually cannot cast spells. Please reconsider the action or character build."
+                )
 
         # --- LLM Evaluation ---
         context_str = f"""
@@ -120,17 +144,22 @@ class JudgeAgent(BaseAgent):
         Provide specific feedback in the 'feedback' field and a 'correction_suggestion' if applicable.
         """
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", system_prompt),
-            ("user", f"Evaluate this turn:\n{context_str}")
-        ])
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=f"Evaluate this turn:\n{context_str}")
+        ]
 
-        verdict: JudgeVerdict = await (prompt | self.structured_llm).ainvoke({})
+        verdict: JudgeVerdict = await get_structured_output(self.model, messages, JudgeVerdict)
 
         if correction_needed and verdict.is_valid:
-             verdict.is_valid = False
-             verdict.feedback += f" [API Discrepancy: {', '.join(correction_suggestions)}]"
-             verdict.correction_suggestion = ", ".join(correction_suggestions) if not verdict.correction_suggestion else verdict.correction_suggestion + f" [API Suggestion: {', '.join(correction_suggestions)}]"
+            verdict.is_valid = False
+            verdict.feedback += f" [API Discrepancy: {', '.join(correction_suggestions)}]"
+            verdict.correction_suggestion = (
+                ", ".join(correction_suggestions)
+                if not verdict.correction_suggestion
+                else verdict.correction_suggestion
+                + f" [API Suggestion: {', '.join(correction_suggestions)}]"
+            )
 
         return {"last_verdict": verdict}
 

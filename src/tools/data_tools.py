@@ -4,12 +4,14 @@ from src.services.data_service import data_service
 
 @tool
 async def get_player_info(player_id: str) -> dict:
+    """Retrieve player character information."""
     player = await data_service.get_player(player_id)
     return player.model_dump() if player else {"error": "Player not found"}
 
 
 @tool
 async def update_player_hp(player_id: str, hp_change: int) -> dict:
+    """Update player HP (positive for healing, negative for damage)."""
     player = await data_service.get_player(player_id)
     if player:
         player.current_hp = max(0, min(player.current_hp + hp_change, player.max_hp))
@@ -25,6 +27,7 @@ async def update_player_hp(player_id: str, hp_change: int) -> dict:
 
 @tool
 async def add_item_to_inventory(player_id: str, item: str) -> dict:
+    """Add an item to player inventory."""
     player = await data_service.get_player(player_id)
     if player:
         player.inventory.append(item)
@@ -35,6 +38,7 @@ async def add_item_to_inventory(player_id: str, item: str) -> dict:
 
 @tool
 async def remove_item_from_inventory(player_id: str, item: str) -> dict:
+    """Remove an item from player inventory."""
     player = await data_service.get_player(player_id)
     if player and item in player.inventory:
         player.inventory.remove(item)

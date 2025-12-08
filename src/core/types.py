@@ -5,6 +5,7 @@ from langchain_core.messages import BaseMessage
 import operator
 import uuid
 
+
 class Setting(BaseModel):
     story_length: int = 2000
     story_arc_count: int = 3
@@ -26,7 +27,9 @@ class Region(BaseModel):
     description: str
     dominant_factions: List[str]
     key_landmarks: List[str] = Field(description="Notable locations within this region")
-    environmental_hook: str = Field(description="Unique feature (e.g., 'Always raining', 'Floating islands')")
+    environmental_hook: str = Field(
+        description="Unique feature (e.g., 'Always raining', 'Floating islands')"
+    )
 
 
 class Culture(BaseModel):
@@ -70,20 +73,20 @@ class DnDCharacterStats(BaseModel):
     saving_throw_charisma: int = 0
 
     # Skills (Example - typically tied to class/abilities/proficiencies)
-    skills: Dict[str, int] = Field(default_factory=dict) # {"Perception": +5, ...}
+    skills: Dict[str, int] = Field(default_factory=dict)  # {"Perception": +5, ...}
 
     # Spellcasting (Examples)
     spell_save_dc: int = 0
     spell_attack_bonus: int = 0
 
     # Proficiency Bonus
-    proficiency_bonus: int = 2 # Level 1 default
+    proficiency_bonus: int = 2  # Level 1 default
 
 
 # --- NEW: SVO and Storyteller Structures ---
 class SVOEvent(BaseModel):
-    subject: str # Who or what performs the action
-    verb: str    # The action itself (e.g., "attacks", "discovers", "destroys")
+    subject: str  # Who or what performs the action
+    verb: str  # The action itself (e.g., "attacks", "discovers", "destroys")
     object: str  # What is affected by the action (e.g., "the dragon", "the secret", "the village")
 
 
@@ -92,20 +95,26 @@ class PlotNode(BaseModel):
     title: str
     description: str
     svo_event: SVOEvent
-    follows_node: Optional[str] = None # ID of the previous node
-    leads_to_node: Optional[str] = None # ID of the next node
-    required_entities: List[str] = Field(default_factory=list) # Entities needed for this beat
-    resulting_entities: List[str] = Field(default_factory=list) # Entities created/changed by this beat
-    tags: List[str] = Field(default_factory=list) # e.g., "setup", "climax", "resolution"
+    follows_node: Optional[str] = None  # ID of the previous node
+    leads_to_node: Optional[str] = None  # ID of the next node
+    required_entities: List[str] = Field(default_factory=list)  # Entities needed for this beat
+    resulting_entities: List[str] = Field(
+        default_factory=list
+    )  # Entities created/changed by this beat
+    tags: List[str] = Field(default_factory=list)  # e.g., "setup", "climax", "resolution"
 
 
 class NarrativeEntity(BaseModel):
     id: str
     name: str
-    type: str # e.g., "character", "location", "item", "concept"
+    type: str  # e.g., "character", "location", "item", "concept"
     core_description: str
-    mutable_attributes: Dict[str, Any] = Field(default_factory=dict) # e.g., {"health": 50, "location": "room1"}
-    relationships: Dict[str, List[str]] = Field(default_factory=dict) # e.g., {"allies": ["npc_john"], "possesses": ["item_sword"]}
+    mutable_attributes: Dict[str, Any] = Field(
+        default_factory=dict
+    )  # e.g., {"health": 50, "location": "room1"}
+    relationships: Dict[str, List[str]] = Field(
+        default_factory=dict
+    )  # e.g., {"allies": ["npc_john"], "possesses": ["item_sword"]}
 
 
 class Storyline(BaseModel):
@@ -117,11 +126,11 @@ class Storyline(BaseModel):
 class Player(BaseModel):
     id: str
     name: str
-    class_name: str # D&D Class (e.g., 'Fighter', 'Wizard')
-    race: str       # D&D Race (e.g., 'Human', 'Elf')
-    background: str # D&D Background (e.g., 'Acolyte', 'Outlander')
+    class_name: str  # D&D Class (e.g., 'Fighter', 'Wizard')
+    race: str  # D&D Race (e.g., 'Human', 'Elf')
+    background: str  # D&D Background (e.g., 'Acolyte', 'Outlander')
     level: int = 1
-    stats: DnDCharacterStats # Use the new DnD stats
+    stats: DnDCharacterStats  # Use the new DnD stats
 
     # Narrative Hooks
     backstory: str = Field(description="Short history relative to the campaign setting")
@@ -136,10 +145,23 @@ class Player(BaseModel):
 # --- Updated Action Model ---
 class Action(BaseModel):
     player_id: str
-    type: str # Changed from 'action_type' to match agent code
+    type: str
     description: str
     timestamp: str
     result: str | None = None
+
+
+class StatChange(BaseModel):
+    target_id: str
+    stat_name: str
+    new_value: int
+
+
+class ActionOutcome(BaseModel):
+    success: bool
+    narrative_result: str
+    stat_changes: list[StatChange] = []
+    new_location_id: str | None = None
 
 
 class CombatState(BaseModel):
@@ -168,7 +190,9 @@ class LocationNode(BaseModel):
     name: str
     region_name: str = Field(description="The parent region this location belongs to")
     description: str = Field(description="Immersive description for the player")
-    connected_ids: List[str] = Field(default_factory=list, description="IDs of locations accessible from here")
+    connected_ids: List[str] = Field(
+        default_factory=list, description="IDs of locations accessible from here"
+    )
     npc_ids: List[str] = Field(default_factory=list, description="IDs of NPCs currently here")
     clues: List[str] = Field(default_factory=list, description="Discoverable info or items")
 
@@ -196,7 +220,9 @@ class JudgeVerdict(BaseModel):
 
 
 class DirectorDirectives(BaseModel):
-    narrative_focus: str = Field(description="What the DM should emphasize (e.g., 'Horror', 'Discovery')")
+    narrative_focus: str = Field(
+        description="What the DM should emphasize (e.g., 'Horror', 'Discovery')"
+    )
     tension_adjustment: float = Field(description="New tension level (0.0 to 1.0)")
     next_beat: str = Field(description="The specific plot point to steer towards")
     npc_instructions: List[str] = Field(default_factory=list, description="Specific cues for NPCs")
@@ -239,8 +265,13 @@ class CampaignBlueprint(BaseModel):
     title: str = Field(description="The campaign title")
     tagline: str = Field(description="A short, punchy tagline")
     overview: str = Field(description="The high-level story summary (Acts I-III)")
-    storyline: Storyline = Field(default_factory=Storyline, description="The structured sequence of key plot points using SVO events.")
-    initial_entities: List[NarrativeEntity] = Field(default_factory=list, description="Initial Narrative Entities and their starting states.")
+    storyline: Storyline = Field(
+        default_factory=Storyline,
+        description="The structured sequence of key plot points using SVO events.",
+    )
+    initial_entities: List[NarrativeEntity] = Field(
+        default_factory=list, description="Initial Narrative Entities and their starting states."
+    )
 
 
 class GameState(TypedDict):
@@ -248,7 +279,6 @@ class GameState(TypedDict):
     setting: Setting
     narrative: NarrativeState
     world: WorldState
-    # 增加operator.add防止角色相互覆盖
     players: Annotated[List[Player], operator.add]
 
     actions: List[Action]
@@ -258,7 +288,6 @@ class GameState(TypedDict):
     director_directives: Optional[DirectorDirectives]
     messages: Annotated[list[BaseMessage], add_messages]
     metadata: dict
-    # Add fields potentially used by agents
     current_action: Optional[Action]
-    last_outcome: Optional[dict] # Or specific outcome type if defined
+    last_outcome: Optional[ActionOutcome]
     last_verdict: Optional[JudgeVerdict]

@@ -1,17 +1,18 @@
 from typing import Any, Dict
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph
 from pydantic import BaseModel
 
 from src.core.types import GameState, DirectorDirectives, NarrativeState
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
+from src.services.structured_output import get_structured_output
+
 
 class DirectorAgent(BaseAgent):
     def __init__(self):
         super().__init__("Director")
         self.model = model_service.get_model()
-        self.structured_llm = self.model.with_structured_output(DirectorDirectives)
 
     def build_graph(self) -> StateGraph:
         graph = StateGraph(GameState)
@@ -38,27 +39,24 @@ class DirectorAgent(BaseAgent):
         Current Scene: {narrative.current_scene}
         Current Tension: {current_tension}
         Recent History Length: {len(history)} messages
-        
+
         Analyze the state. Is the scene dragging? Is it too chaotic? 
         Provide directives to guide the next narration.
         """
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", system_prompt),
-            ("user", user_prompt)
-        ])
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt)
+        ]
 
-        directives: DirectorDirectives = await (prompt | self.structured_llm).ainvoke({})
+        directives: DirectorDirectives = await get_structured_output(self.model, messages, DirectorDirectives)
 
         # Update the narrative state with new tension
-        updated_narrative = narrative.model_copy(update={
-            "narrative_tension": directives.tension_adjustment
-        })
+        updated_narrative = narrative.model_copy(
+            update={"narrative_tension": directives.tension_adjustment}
+        )
 
-        return {
-            "director_directives": directives,
-            "narrative": updated_narrative
-        }
+        return {"director_directives": directives, "narrative": updated_narrative}
 
     async def process(self, state: GameState) -> Dict[str, Any]:
         return await self.direct_scene(state)

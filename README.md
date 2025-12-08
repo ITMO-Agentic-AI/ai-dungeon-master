@@ -44,21 +44,14 @@ This will:
 
 Edit `.env` file with your settings:
 
-**Option A: Use Anthropic Claude**
-```env
-CUSTOM_MODEL_ENABLED=false
-ANTHROPIC_API_KEY=your_key_here
-MODEL_NAME=claude-sonnet-4-20250514
-```
-
-**Option B: Use OpenAI**
+**Option A: Use OpenAI**
 ```env
 CUSTOM_MODEL_ENABLED=false
 OPENAI_API_KEY=your_key_here
 MODEL_NAME=gpt-4-turbo-preview
 ```
 
-**Option C: Use Custom Model Server**
+**Option B: Use Custom Model Server**
 ```env
 CUSTOM_MODEL_ENABLED=true
 CUSTOM_MODEL_BASE_URL=http://your-server:8000/v1
