@@ -118,7 +118,7 @@ async def get_user_action(state: GameState) -> Action:
     player = state["players"][0]
     
     print("\nWhat do you do?")
-    print("(Type your action, e.g., 'attack the goblin', 'search the room', 'move to the forest')")
+    print("(Type your action, DM should suggest)")
     description = input("> ").strip()
     
     if not description:
@@ -184,7 +184,7 @@ async def run_game_loop():
             turn += 1
             state["metadata"]["turn"] = turn
             
-            display_world_state(state)
+            # display_world_state(state)
             
             action = await get_user_action(state)
             if action.description.lower() in ["quit", "exit", "q"]:
