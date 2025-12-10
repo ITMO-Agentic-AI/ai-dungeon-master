@@ -25,6 +25,7 @@ class DungeonMasterAgent(BaseAgent):
         narrate the opening scene to set the mood and establish the initial setting.
         """
         narrative = state.get("narrative")
+        setting = state.get("setting")
         world = state.get("world")
         players = state.get("players", [])
 
@@ -38,6 +39,10 @@ class DungeonMasterAgent(BaseAgent):
             starting_location = list(world.locations.values())[0] if world.locations else None
 
         player_names = ", ".join([p.name for p in players])
+
+        # FIX: Get theme from setting, not narrative
+        # narrative.theme doesn't exist - it's in setting.theme
+        theme = setting.theme if setting else "Unknown"
 
         system_prompt = """You are the Dungeon Master.
         Craft an immersive opening narration that:
@@ -57,9 +62,10 @@ class DungeonMasterAgent(BaseAgent):
         if starting_location:
             location_description = f"\n\nStarting Location: {starting_location.name}\nDescription: {starting_location.description}"
 
+        # FIX: Use narrative.story_arc_summary for tone context instead of non-existent narrative.tone
         context_block = f"""Campaign Title: {narrative.title}
-Theme: {narrative.theme}
-Tone: {narrative.tone}
+Theme: {theme}
+Campaign Overview: {narrative.story_arc_summary}
 
 Player Characters: {player_names}
 
