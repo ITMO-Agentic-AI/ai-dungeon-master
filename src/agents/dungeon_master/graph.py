@@ -1,5 +1,3 @@
-# src/agents/dungeon_master/graph.py
-
 from typing import Any, Dict
 from langgraph.graph import StateGraph
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
@@ -19,6 +17,63 @@ class DungeonMasterAgent(BaseAgent):
         graph.add_node("narrate_outcome", self.narrate_outcome)
         graph.add_edge("__start__", "narrate_outcome")
         return graph
+
+    async def narrate_initial(self, state: GameState) -> Dict[str, Any]:
+        """
+        Phase 6: The Initial Narrator.
+        After the world is created and players are established,
+        narrate the opening scene to set the mood and establish the initial setting.
+        """
+        narrative = state.get("narrative")
+        world = state.get("world")
+        players = state.get("players", [])
+
+        if not narrative or not world or not players:
+            return {"messages": [AIMessage(content="The world awaits...")]}
+
+        # Get opening location (usually the first location or a specific starting location)
+        starting_location = None
+        if world.locations:
+            # Assume the first location is the starting point
+            starting_location = list(world.locations.values())[0] if world.locations else None
+
+        player_names = ", ".join([p.name for p in players])
+
+        system_prompt = """You are the Dungeon Master.
+        Craft an immersive opening narration that:
+        1. Sets the tone and atmosphere of the campaign
+        2. Introduces the setting and starting location
+        3. Welcomes the players and their characters
+        4. Creates intrigue and adventure hooks
+
+        Format:
+        - Use vivid, evocative language
+        - Use bold for important details or atmosphere
+        - Use > blockquotes for NPC greetings or ambient sounds
+        - Keep it under 300 words to maintain pacing
+        """
+
+        location_description = ""
+        if starting_location:
+            location_description = f"\n\nStarting Location: {starting_location.name}\nDescription: {starting_location.description}"
+
+        context_block = f"""Campaign Title: {narrative.title}
+Theme: {narrative.theme}
+Tone: {narrative.tone}
+
+Player Characters: {player_names}
+
+Opening Hook: {narrative.tagline}{location_description}
+        """
+
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=f"Begin this campaign with an engaging opening narration:\n{context_block}")
+        ]
+
+        response = await self.model.ainvoke(messages)
+
+        return {"messages": [response]}
 
     async def narrate_outcome(self, state: GameState) -> Dict[str, Any]:
         """
