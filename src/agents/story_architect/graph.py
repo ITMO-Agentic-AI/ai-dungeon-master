@@ -38,6 +38,7 @@ class StoryArchitectAgent(BaseAgent):
         Example: "allies": ["char_1", "char_2"] NOT "allies": "char_1"
         """
 
+        # Use raw string to avoid f-string format specifier issues with JSON examples
         user_prompt = f"""
         Theme: {theme}
         Player Characters: {', '.join(player_concepts)}
@@ -48,7 +49,7 @@ class StoryArchitectAgent(BaseAgent):
         2. An Overview (Act I, II, III).
         3. A structured Storyline with 5-10 PlotNodes.
            Each PlotNode must have:
-           - An ID (e.g., beat_01, beat_02).
+           - An ID (e.g., "beat_01", "beat_02").
            - A Title and Description.
            - An SVOEvent (Subject, Verb, Object).
            - Logical connections (follows_node, leads_to_node).
@@ -58,15 +59,16 @@ class StoryArchitectAgent(BaseAgent):
            - An ID (e.g., "char_main_hero", "loc_castle", "item_sword").
            - A Name and Type (character, location, item).
            - A core description.
-           - Initial mutable attributes (e.g., {"location": "castle", "health": 100, "status": "active"}).
+           - Initial mutable attributes as a dictionary with string keys and values.
            - Relationships with other entities (IMPORTANT: ALL relationship values MUST be LISTS, even for single values).
-             Example relationships:
-             "allies": ["char_companion1", "char_companion2"],
-             "located_in": ["loc_starting_town"],
-             "possesses": ["item_magical_key"],
-             "enemy_of": ["char_dark_lord"]
+             Valid relationship examples:
+             - "allies": ["char_companion1", "char_companion2"]
+             - "located_in": ["loc_starting_town"]
+             - "possesses": ["item_magical_key"]
+             - "enemy_of": ["char_dark_lord"]
              
-           REMEMBER: located_in, possesses, owned_by, etc. - ALL must map to LISTS.
+           REMEMBER: located_in, possesses, owned_by, and ALL other relationships must map to LISTS.
+           Example: Do NOT use "located_in": "loc_castle", instead use "located_in": ["loc_castle"]
         
         Focus on creating a logically connected sequence of events and well-defined initial entities.
         """
