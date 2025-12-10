@@ -34,9 +34,9 @@ class DungeonMasterAgent(BaseAgent):
 
         # Get opening location (usually the first location or a specific starting location)
         starting_location = None
-        if world.locations:
+        if world and hasattr(world, 'locations') and world.locations:
             # Assume the first location is the starting point
-            starting_location = list(world.locations.values())[0] if world.locations else None
+            starting_location = list(world.locations.values())[0]
 
         player_names = ", ".join([p.name for p in players])
 
@@ -58,8 +58,9 @@ class DungeonMasterAgent(BaseAgent):
         - Keep it under 300 words to maintain pacing
         """
 
+        # FIX: Add None checking before accessing starting_location attributes
         location_description = ""
-        if starting_location:
+        if starting_location and hasattr(starting_location, 'name') and hasattr(starting_location, 'description'):
             location_description = f"\n\nStarting Location: {starting_location.name}\nDescription: {starting_location.description}"
 
         # FIX: Use narrative.story_arc_summary for tone context instead of non-existent narrative.tone
@@ -93,12 +94,16 @@ Opening Hook: {narrative.tagline}{location_description}
         if not outcome:
             return {"messages": [AIMessage(content="The world waits for your action.")]}
 
-        # --- Fix: Get actor's location ---
-        player_map = {p.id: p for p in state["players"]}
+        # --- Fix: Get actor's location with safe None checking ---
+        player_map = {p.id: p for p in state.get("players", [])}
         actor_location = "Unknown"
         if action and action.player_id in player_map:
             actor_loc_id = player_map[action.player_id].location_id
-            actor_location = state["world"].locations.get(actor_loc_id, "Unknown")
+            world = state.get("world")
+            if world and hasattr(world, 'locations'):
+                location_obj = world.locations.get(actor_loc_id)
+                if location_obj and hasattr(location_obj, 'description'):
+                    actor_location = location_obj.description
         # --- End Fix ---
 
         system_prompt = """You are the Dungeon Master.
@@ -116,13 +121,13 @@ Opening Hook: {narrative.tagline}{location_description}
         """
 
         context_block = f"""
-        Player Action: {action.description}
+        Player Action: {action.description if action else 'Unknown'}
         Result: {outcome.narrative_result} (Success: {outcome.success})
 
         Director's Focus: {directives.narrative_focus if directives else 'Neutral'}
         Director's Note: {directives.next_beat if directives else 'Continue story'}
 
-        Current Location: {actor_location} # Use the fixed location
+        Current Location: {actor_location}
         """
 
         messages = [
