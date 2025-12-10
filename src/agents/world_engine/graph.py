@@ -1,4 +1,5 @@
 # src/agents/world_engine/graph.py
+
 from typing import Any, Dict, List, Literal
 import uuid
 import json
@@ -11,7 +12,7 @@ from pydantic import BaseModel, Field
 from src.core.types import GameState, WorldState, LocationNode, ActiveNPC, Region, KeyNPC
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
-from src.services.structured_output import get_structured_output
+from src.services.structured_output import get_structured_output # Assuming this utility exists
 
 
 class LocationNodeInput(BaseModel):
@@ -28,14 +29,11 @@ class LocationBatch(BaseModel):
 class WorldUpdateOutput(BaseModel):
     time_passed_hours: int = Field(description="Hours passed since last event")
     new_weather: str = Field(description="Current weather condition")
-    # description直接通过update_world返回给user, 或者存入world state
 
 
 class WorldEngineAgent(BaseAgent):
     """
-    WorldEngineAgent:
-    - 实例化: 将背景设定(区域/非玩家角色)转换为可玩地图(地点/活跃非玩家角色)
-    - 更新: 在游戏过程中管理时间, 天气和环境描述
+    WorldEngineAgent: Handles world instantiation and updates.
     """
 
     def __init__(self):
@@ -45,27 +43,36 @@ class WorldEngineAgent(BaseAgent):
     def build_graph(self) -> StateGraph:
         graph = StateGraph(GameState)
 
-        # 添加节点
+        # Add nodes
         graph.add_node("instantiate_world", self.instantiate_world)
-        graph.add_node("update_world", self.update_world)
+        graph.add_node("update_world", self.update_world) # Existing method for time/weather
 
-        # 路由逻辑(Router)
+        # NEW: Add the specific update method for gameplay
+        graph.add_node("update_world_gameplay", self.update_world_gameplay)
+
+        # Routing logic (Router)
         graph.add_conditional_edges(
             "__start__",
             self.route_step,
-            {"instantiate": "instantiate_world", "update": "update_world"},
+            {
+                "instantiate": "instantiate_world",
+                "update": "update_world", # Default update (time/weather)
+                "gameplay_update": "update_world_gameplay" # NEW: Specific update for gameplay
+            },
         )
 
-        # 添加边
+        # Add edges
         graph.add_edge("instantiate_world", END)
         graph.add_edge("update_world", END)
+        graph.add_edge("update_world_gameplay", END) # NEW: Edge for gameplay update
 
         return graph
 
-    def route_step(self, state: GameState) -> Literal["instantiate", "update"]:
+    def route_step(self, state: GameState) -> Literal["instantiate", "update", "gameplay_update"]:
         """
-        检查世界地图是否存在
-        如果不存在, 则创建它(instantiate), 如果存在, 则模拟环境(update)
+        Checks if the world map exists.
+        If not, creates it (instantiate).
+        If it exists, checks if it's for time/weather update or gameplay update.
         """
         world = state.get("world")
 
@@ -82,9 +89,17 @@ class WorldEngineAgent(BaseAgent):
         if has_regions and not has_locations:
             return "instantiate"
 
+        # NEW LOGIC: Determine if it's a gameplay update or a time/weather update
+        # Check if 'last_outcome' exists, which indicates an action was resolved
+        outcome = state.get("last_outcome")
+        if outcome:
+            # If there's an outcome from an action, route to gameplay update
+            return "gameplay_update"
+
+        # Otherwise, default to time/weather update
         return "update"
 
-    # Phase 1: 初始化世界(Instantiate World, Map Generation)
+    # Phase 1: Initialize World (Instantiate World, Map Generation)
     async def instantiate_world(self, state: GameState) -> Dict[str, Any]:
         """
         Turns 'Lore' (Regions) into 'Locations' and places 'Active Entities'
@@ -93,10 +108,10 @@ class WorldEngineAgent(BaseAgent):
 
         world_state = state.get("world")
 
-        # 如果是空测试, world_state为None, 创造一个标准的默认世界设定
+        # If it's an empty test, world_state is None, create a standard default world setting
         if not world_state:
             print("DEBUG: No world state found, creating default test region.")
-            # 创建一个符合src/core/types.py定义的默认Region
+            # Create a default Region conforming to src/core/types.py definition
             default_region = Region(
                 name="The Shadow Realm",
                 description="A misty, gray dimension used for testing.",
@@ -104,7 +119,7 @@ class WorldEngineAgent(BaseAgent):
                 key_landmarks=["The Debug Console"],
                 environmental_hook="Eternal Twilight",
             )
-            # 初始化一个WorldState
+            # Initialize a WorldState
             world_state = WorldState(regions=[default_region], important_npcs=[])
 
         regions_data = []
@@ -127,7 +142,7 @@ class WorldEngineAgent(BaseAgent):
 
         regions_desc = "\n".join(desc_list)
 
-        # 为每个区域生成地点
+        # Generate locations for each region
         all_locations = {}
 
         system_prompt = """You are the World Engine.
@@ -155,9 +170,9 @@ class WorldEngineAgent(BaseAgent):
 
         result = await get_structured_output(self.model, messages, LocationBatch)
 
-        # 转换为内部LocationNode类型并进行索引
+        # Convert to internal LocationNode type and index
         for loc_input in result.locations:
-            # 生成一个干净的ID
+            # Generate a clean ID
             loc_id = f"loc_{uuid.uuid4().hex[:8]}"
 
             raw_exits = loc_input.exits
@@ -178,14 +193,14 @@ class WorldEngineAgent(BaseAgent):
             )
             all_locations[loc_id] = new_node
 
-        # 放置NPC(将背景故事中的NPC映射到实际游戏中的NPC)
+        # Place NPCs (map NPCs from background story to actual game NPCs)
         active_npcs = {}
         lore_npcs = world_state.important_npcs or []
 
         for npc in lore_npcs:
             start_loc_id = None
 
-            # 简单的匹配逻辑: 找到一个与NPC所在区域匹配的位置
+            # Simple matching logic: Find a location matching the NPC's region
             for loc_id, loc in all_locations.items():
                 if npc.region and (
                     loc.region_name.lower() in npc.region.lower()
@@ -194,7 +209,7 @@ class WorldEngineAgent(BaseAgent):
                     start_loc_id = loc_id
                     break
 
-            # 备选: 选择第一个可用的位置
+            # Fallback: Choose the first available location
             if not start_loc_id and all_locations:
                 start_loc_id = list(all_locations.keys())[0]
 
@@ -209,29 +224,29 @@ class WorldEngineAgent(BaseAgent):
                 )
                 active_npcs[npc_id] = new_active_npc
 
-                # 更新位置信息以记录NPC的存在
+                # Update location info to record the NPC's presence
                 if npc_id not in all_locations[start_loc_id].npc_ids:
                     all_locations[start_loc_id].npc_ids.append(npc_id)
 
-        # 返回更新后的世界状态, 创建一个副本确保Pydantic验证通过
+        # Return the updated world state, creating a copy to ensure Pydantic validation passes
         updated_world = world_state.model_copy(
             update={
                 "locations": all_locations,
                 "active_npcs": active_npcs,
-                "global_time": 8,  # 早上8点开始
+                "global_time": 8,  # Start at 8 AM
                 "weather": "Clear",
             }
         )
 
         return {"world": updated_world}
 
-    # Phase 3: 更新世界(Time & Weather)
+    # Phase 3: Update World (Time & Weather) - Default update method
     async def update_world(self, state: GameState) -> Dict[str, Any]:
         """
-        分析上一个事件, 以推进时间和天气变化
+        Analyze the last event to advance time and change weather.
         """
         world_state = state.get("world")
-        # 避免报错
+        # Avoid errors
         if not world_state:
             return {}
 
@@ -244,11 +259,11 @@ class WorldEngineAgent(BaseAgent):
 
         messages = state.get("messages", [])
 
-        # 安全获得之前的信息
+        # Safely get the previous message
         last_event = "The game begins."
         if messages:
             last_msg = messages[-1]
-            # 处理不同类型的消息
+            # Handle different message types
             if isinstance(last_msg, dict):
                 last_event = last_msg.get("content", str(last_msg))
             else:
@@ -290,12 +305,43 @@ class WorldEngineAgent(BaseAgent):
             )
             return {"world": updated_world}
 
+    # NEW: Specific method for updating world state based on action outcomes during gameplay
+    async def update_world_gameplay(self, state: GameState) -> Dict[str, Any]:
+        """
+        Phase 2c: Update World State based on action outcome during gameplay.
+        Modifies the world state (locations, NPCs, etc.) based on the result of an action.
+        """
+        print("--- [World Engine] Updating World State (Gameplay) ---")
+
+        # Get the outcome of the action
+        outcome = state.get("last_outcome")
+        # Get the current world state
+        world_state: WorldState = state["world"]
+        # Get the current narrative state for context
+        narrative = state["narrative"]
+
+        # Example logic: If the action involved moving, update the player's location in the world state
+        # This is a placeholder; you would implement specific logic based on the outcome
+        # For example, mark a location as "visited", update NPC positions, change location state (e.g., door unlocked),
+        # trigger events based on narrative nodes, etc.
+        if outcome and hasattr(outcome, 'new_location_id'):
+            # Example: Update player location in world state if needed (though usually handled by Player Proxy)
+            # Or update the location itself (e.g., mark as visited, trigger location-specific events)
+            pass
+
+        # Return the potentially updated world state
+        # For now, just return the existing state unless modified by the logic above
+        return {"world": world_state}
+
+
     async def process(self, state: GameState, runtime: Runtime = None) -> Dict[str, Any]:
         step = self.route_step(state)
         if step == "instantiate":
             return await self.instantiate_world(state)
+        elif step == "gameplay_update":
+            return await self.update_world_gameplay(state) # NEW: Handle gameplay updates
         else:
-            return await self.update_world(state)
+            return await self.update_world(state) # Handle time/weather updates
 
-
-graph = WorldEngineAgent().build_graph().compile()
+# Optional: Compile the graph if needed elsewhere
+# graph = WorldEngineAgent().build_graph().compile()

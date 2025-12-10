@@ -291,3 +291,5 @@ class GameState(TypedDict):
     current_action: Optional[Action]
     last_outcome: Optional[ActionOutcome]
     last_verdict: Optional[JudgeVerdict]
+    response_type: str
+    __end__: bool
