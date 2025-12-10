@@ -1,190 +1,373 @@
-from typing import Literal, Dict, Any
+from typing import Literal, Dict, Any, Optional
+import asyncio
+import logging
+from datetime import datetime
+
 from langgraph.graph import StateGraph, END, START
 from langgraph.checkpoint.memory import MemorySaver
 
 from src.core.types import GameState
 
-# Import Agents
+# Import Agents - Use the ACTUAL agent classes
 from src.agents.story_architect.graph import StoryArchitectAgent
 from src.agents.lore_builder.graph import LoreBuilderAgent
 from src.agents.world_engine.graph import WorldEngineAgent
-from src.agents.player_proxy.graph import PlayerCreatorAgent
+from src.agents.player_proxy.graph import PlayerProxyAgent  # NOTE: This is the actual class
 from src.agents.action_resolver.graph import ActionResolverAgent
 from src.agents.rule_judge.graph import JudgeAgent
 from src.agents.director.graph import DirectorAgent
 from src.agents.dungeon_master.graph import DungeonMasterAgent
 
+logger = logging.getLogger(__name__)
+
 
 class OrchestratorService:
+    """
+    Central orchestrator for the AI Dungeon Master MAS.
+    
+    **CRITICAL**: This orchestrator integrates with agents that have their own internal LangGraphs.
+    
+    Phase 1: Setup Pipeline
+    - StoryArchitectAgent.plan_narrative() → generates narrative blueprint
+    - LoreBuilderAgent.build_lore() → generates world lore
+    - WorldEngineAgent.instantiate_world() → creates locations and NPCs
+    - PlayerProxyAgent.process() → USES INTERNAL SEND() for parallel character creation
+    - DungeonMasterAgent.narrate_initial() → initial narration
+    
+    Phase 2: Gameplay Loop
+    - DungeonMasterAgent.plan_response() → decides next action
+    - ActionResolverAgent.resolve_action() → handles player action
+    - JudgeAgent.evaluate_turn() → validates outcomes
+    - WorldEngineAgent.update_world() → updates world state
+    - PlayerProxyAgent.update_players() → updates player state
+    - DirectorAgent.direct_scene() → narrative pacing
+    - DungeonMasterAgent.narrate_outcome() → narrate results
+    """
+
     def __init__(self):
+        """Initialize orchestrator with all agent instances and memory."""
         self.workflow = None
         self.compiled_graph = None
         self.memory = MemorySaver()
+        self._retry_count = 0
+        self._max_retry_attempts = 2
 
         # Instantiate all agents
         self.architect = StoryArchitectAgent()
         self.lore_builder = LoreBuilderAgent()
         self.world_engine = WorldEngineAgent()
-        self.player_creator = PlayerCreatorAgent() # Used in Setup and Update
+        # CRITICAL: Use PlayerProxyAgent, not PlayerCreatorAgent
+        self.player_proxy = PlayerProxyAgent()
 
         self.resolver = ActionResolverAgent()
         self.judge = JudgeAgent()
         self.director = DirectorAgent()
         self.dm = DungeonMasterAgent()
 
-    def build_pipeline(self):
+        logger.info("OrchestratorService initialized with all agents")
+
+    def build_pipeline(self) -> None:
         """
-        Constructs the Master Graph connecting all sub-agents according to the React pattern.
+        Constructs the Master Graph connecting all agents.
+        
+        CRITICAL: Each agent's method signatures must match the actual implementation.
+        For agents with internal LangGraphs (PlayerProxyAgent), call their process() method.
         """
-        builder = StateGraph(GameState)
+        try:
+            builder = StateGraph(GameState)
 
-        # ============================================================
-        # 1. REGISTER NODES
-        # ============================================================
+            # ============================================================
+            # 1. REGISTER NODES - Use ACTUAL methods from agents
+            # ============================================================
 
-        # --- Initialization Phase Nodes ---
-        builder.add_node("story_architect", self.architect.plan_narrative)
-        builder.add_node("lore_builder", self.lore_builder.build_lore)
-        builder.add_node("world_engine", self.world_engine.instantiate_world)
-        builder.add_node("player_creator", self.player_creator.create_characters)
-        builder.add_node("initial_dm", self.dm.narrate_initial)
+            # --- Phase 1: Initialization Pipeline ---
+            builder.add_node("story_architect", self.architect.plan_narrative)
+            builder.add_node("lore_builder", self.lore_builder.build_lore)
+            builder.add_node("world_engine", self.world_engine.instantiate_world)
+            
+            # CRITICAL FIX: PlayerProxyAgent has process() method that handles parallel creation
+            # Its internal graph uses Send() to create characters in parallel
+            builder.add_node("player_creator", self.player_proxy.process)
+            
+            builder.add_node("initial_dm", self.dm.narrate_initial)
 
-        # --- Gameplay Loop Nodes ---
-        builder.add_node("dm_planner", self.dm.plan_response) # Central planner
-        builder.add_node("action_resolver", self.resolver.resolve_action)
-        builder.add_node("lore_builder_question", self.lore_builder.answer_question)
-        builder.add_node("judge", self.judge.evaluate_turn)
-        builder.add_node("world_engine_update", self.world_engine.update_world) # NEW: For gameplay update
-        builder.add_node("player_creator_update", self.player_creator.update_players) # NEW: For gameplay update
-        builder.add_node("director", self.director.direct_scene)
-        builder.add_node("dm_outcome", self.dm.narrate_outcome)
+            # --- Phase 2: Gameplay Loop ---
+            builder.add_node("dm_planner", self.dm.plan_response)
+            builder.add_node("action_resolver", self.resolver.resolve_action)
+            builder.add_node("lore_builder_question", self.lore_builder.answer_question)
+            builder.add_node("judge", self.judge.evaluate_turn)
+            builder.add_node("world_engine_update", self.world_engine.update_world)
+            
+            # CRITICAL FIX: Use player_proxy.update_players() for Phase 2 updates
+            builder.add_node("player_creator_update", self.player_proxy.update_players)
+            
+            builder.add_node("director", self.director.direct_scene)
+            builder.add_node("dm_outcome", self.dm.narrate_outcome)
+            builder.add_node("exit_check", self._exit_check_node)
 
-        # --- Exit Check Node ---
-        builder.add_node("exit_check", self.exit_check)
+            logger.debug("Registered all graph nodes")
 
-        # ============================================================
-        # 2. DEFINE ROUTING LOGIC
-        # ============================================================
+            # ============================================================
+            # 2. DEFINE ROUTING LOGIC
+            # ============================================================
 
-        def route_entry(state: GameState) -> Literal["story_architect", "dm_planner"]:
-            """
-            Determines if we are starting a new game or playing a turn.
-            Checks if 'world.locations' exists to decide.
-            """
-            world = state.get("world")
-            # If we have locations, the world is built -> Go to Game Loop
-            if world and world.locations:
-                return "dm_planner"
-            # Otherwise -> Start Initialization
-            return "story_architect"
+            def route_entry(state: GameState) -> Literal["story_architect", "dm_planner"]:
+                """
+                Route entry point: either start setup or jump to gameplay.
+                Check if world is already initialized (locations populated).
+                """
+                world = state.get("world")
+                
+                # If world has locations, we're resuming or in gameplay
+                if world and world.locations and len(world.regions) > 0:
+                    logger.debug("Routing to dm_planner (world already initialized)")
+                    return "dm_planner"
+                
+                # Otherwise start from beginning
+                logger.debug("Routing to story_architect (new game)")
+                return "story_architect"
 
-        def route_dm_plan(state: GameState) -> Literal["action_resolver", "lore_builder_question", "exit_check"]:
-            """
-            Routes the DM's plan based on whether it's an action, a question, or an exit command.
-            This requires the DM Planner to set a flag in the state.
-            """
-            # Assume the DM Planner sets a field like 'response_type' in the state
-            response_type = state.get("response_type", "unknown")
+            def route_dm_plan(state: GameState) -> Literal["action_resolver", "lore_builder_question", "exit_check"]:
+                """
+                Route DM's plan based on response_type.
+                DM must set: state["response_type"] to one of:
+                - "action": player performed an action
+                - "question": player asked a question  
+                - "exit": player wants to quit
+                """
+                response_type = state.get("response_type", "unknown")
+                
+                if not response_type:
+                    logger.warning("DM response_type not set, defaulting to exit_check")
+                    return "exit_check"
+                
+                response_type_lower = str(response_type).lower().strip()
+                
+                if response_type_lower == "action":
+                    logger.debug("DM plan routed to action_resolver")
+                    return "action_resolver"
+                elif response_type_lower == "question":
+                    logger.debug("DM plan routed to lore_builder_question")
+                    return "lore_builder_question"
+                elif response_type_lower == "exit":
+                    logger.debug("DM plan routed to exit_check")
+                    return "exit_check"
+                else:
+                    logger.warning(f"Unknown response_type: {response_type}. Routing to exit_check.")
+                    return "exit_check"
 
-            if response_type == "action":
-                return "action_resolver"
-            elif response_type == "question":
-                return "lore_builder_question"
-            elif response_type == "exit":
-                return "exit_check"
-            else:
-                # If no clear type, default to exit check (might be a simple message)
-                return "exit_check"
+            def route_judge(state: GameState) -> Literal["action_resolver", "world_engine_update"]:
+                """
+                Quality Assurance routing - Judge evaluates outcome.
+                If invalid and retries remaining, loop back to resolver.
+                Otherwise proceed to state updates.
+                """
+                verdict = state.get("last_verdict")
+                retry_count = state.get("_retry_count", 0)
+                
+                # Valid verdict: proceed
+                if verdict and verdict.is_valid:
+                    logger.debug("Judge verdict valid. Proceeding to world_engine_update.")
+                    state["_retry_count"] = 0
+                    return "world_engine_update"
+                
+                # Invalid verdict with retries remaining: retry resolution
+                if verdict and not verdict.is_valid and retry_count < self._max_retry_attempts:
+                    retry_count += 1
+                    state["_retry_count"] = retry_count
+                    logger.warning(
+                        f"Judge rejected turn (attempt {retry_count}/{self._max_retry_attempts}). "
+                        f"Feedback: {verdict.correction_suggestion}"
+                    )
+                    return "action_resolver"
+                
+                # Max retries exceeded: proceed anyway
+                if retry_count >= self._max_retry_attempts:
+                    logger.warning(
+                        f"Max retry attempts ({self._max_retry_attempts}) reached. Proceeding anyway."
+                    )
+                    state["_retry_count"] = 0
+                    return "world_engine_update"
+                
+                # No verdict: proceed to update
+                logger.debug("No judge verdict. Proceeding to world_engine_update.")
+                return "world_engine_update"
 
-        def route_judge(state: GameState) -> Literal["action_resolver", "world_engine_update", "director"]:
-            """
-            The Quality Assurance Loop.
-            If the Judge flags the action/outcome as invalid, retry resolution.
-            If valid, proceed to Updater (World/Player) and then Director.
-            """
-            verdict = state.get("last_verdict")
-            if verdict and not verdict.is_valid:
-                print(f" [!] Judge Rejected Turn: {verdict.feedback}. Retrying...")
-                # We loop back to the resolver.
-                return "action_resolver"
+            # ============================================================
+            # 3. DEFINE EDGES
+            # ============================================================
 
-            # If valid, proceed to Updater (World/Player)
-            return "world_engine_update"
+            # --- Entry Point ---
+            builder.add_conditional_edges(START, route_entry)
 
-        # ============================================================
-        # 3. DEFINE EDGES
-        # ============================================================
+            # --- Phase 1: Setup Pipeline (Linear Flow) ---
+            builder.add_edge("story_architect", "lore_builder")
+            builder.add_edge("lore_builder", "world_engine")
+            builder.add_edge("world_engine", "player_creator")
+            builder.add_edge("player_creator", "initial_dm")
+            builder.add_edge("initial_dm", "dm_planner")
 
-        # --- Entry Point ---
-        builder.add_conditional_edges(START, route_entry)
+            # --- Phase 2: Main Gameplay Loop ---
+            builder.add_conditional_edges("dm_planner", route_dm_plan)
 
-        # --- Initialization Flow (Linear) ---
-        builder.add_edge("story_architect", "lore_builder")
-        builder.add_edge("lore_builder", "world_engine")
-        builder.add_edge("world_engine", "player_creator")
-        builder.add_edge("player_creator", "initial_dm")
-        # After initial narration, go to the main game loop via User Input
-        builder.add_edge("initial_dm", "dm_planner") 
+            # Action resolution path: Action -> Judge -> Update path
+            builder.add_edge("action_resolver", "judge")
+            builder.add_conditional_edges("judge", route_judge)
 
-        # --- Game Loop Flow ---
-        # 1. DM Planner receives input and decides next step
-        builder.add_node("dm_planner", self.dm.plan_response) # Already added above
-        # 2. Route based on DM's decision
-        builder.add_conditional_edges("dm_planner", route_dm_plan)
+            # Update path: World -> Players -> Director -> Outcome
+            builder.add_edge("world_engine_update", "player_creator_update")
+            builder.add_edge("player_creator_update", "director")
+            builder.add_edge("director", "dm_outcome")
 
-        # 3. For Actions: Resolver -> Judge -> Updater (World/Player) -> Director -> DM Outcome
-        builder.add_edge("action_resolver", "judge")
-        builder.add_conditional_edges("judge", route_judge)
-        # Add edges for Updater
-        builder.add_edge("world_engine_update", "player_creator_update")
-        builder.add_edge("player_creator_update", "director")
-        builder.add_edge("director", "dm_outcome")
+            # Question resolution path: Question -> Director -> Outcome
+            builder.add_edge("lore_builder_question", "director")
+            builder.add_edge("director", "dm_outcome")
 
-        # 4. For Questions: Lore Builder -> Director -> DM Outcome
-        builder.add_edge("lore_builder_question", "director")
-        builder.add_edge("director", "dm_outcome")
+            # Return to next turn
+            builder.add_edge("dm_outcome", "dm_planner")
 
-        # 5. DM Outcome returns to DM Planner for the next turn
-        builder.add_edge("dm_outcome", "dm_planner")
+            # Exit path
+            builder.add_edge("exit_check", END)
 
-        # 6. Exit Check
-        builder.add_edge("exit_check", END)
+            logger.debug("All graph edges defined")
 
-        # ============================================================
-        # 4. COMPILE
-        # ============================================================
-        self.compiled_graph = builder.compile(checkpointer=self.memory)
+            # ============================================================
+            # 4. COMPILE GRAPH
+            # ============================================================
+            self.compiled_graph = builder.compile(checkpointer=self.memory)
+            logger.info("Graph compiled successfully")
 
-    async def execute_turn(self, state: GameState, config: Dict[str, Any] = None) -> GameState:
+        except Exception as e:
+            logger.error(f"Failed to build pipeline: {e}", exc_info=True)
+            raise RuntimeError(f"Graph building failed: {e}") from e
+
+    async def initialize_world(self, state: GameState) -> GameState:
         """
-        The main entry point for the external application (FastAPI/CLI).
+        Phase 1: Initialize the world through the setup pipeline.
+        
+        Flow:
+        1. StoryArchitectAgent creates narrative blueprint
+        2. LoreBuilderAgent creates world lore
+        3. WorldEngineAgent creates locations and NPCs
+        4. PlayerProxyAgent.process() creates characters IN PARALLEL (via Send API)
+        5. DungeonMasterAgent provides initial narration
+        
+        Args:
+            state: Initial GameState
+            
+        Returns:
+            GameState after setup completion
+            
+        Raises:
+            RuntimeError: If initialization fails
         """
         if not self.compiled_graph:
+            logger.debug("Graph not compiled. Building pipeline...")
             self.build_pipeline()
 
+        session_id = state["metadata"].get("session_id", "default_session")
+        config = {"configurable": {"thread_id": session_id}}
+
+        logger.info(f"Starting world initialization (session: {session_id})")
+        logger.info("Phase 1: Story Architect → Lore Builder → World Engine → Player Creator (PARALLEL) → Initial DM")
+
+        try:
+            final_state = await self.compiled_graph.ainvoke(state, config=config)
+            logger.info("World initialization completed successfully")
+            
+            # Log what was created
+            players = final_state.get("players", [])
+            narrative = final_state.get("narrative")
+            world = final_state.get("world")
+            
+            logger.info(f"Created: {len(players)} characters")
+            if narrative:
+                logger.info(f"Campaign: {narrative.title}")
+            if world:
+                logger.info(f"World has {len(world.locations)} locations and {len(world.active_npcs)} NPCs")
+            
+            return final_state
+
+        except Exception as e:
+            logger.error(f"World initialization failed: {e}", exc_info=True)
+            raise RuntimeError(f"Failed to initialize world: {e}") from e
+
+    async def execute_turn(
+        self, state: GameState, config: Optional[Dict[str, Any]] = None
+    ) -> GameState:
+        """
+        Phase 2: Execute a single game turn in the main gameplay loop.
+        
+        Flow:
+        1. DM Planner decides: action, question, or exit
+        2a. If action: resolve → judge → world update → director → narration
+        2b. If question: lore builder → director → narration
+        3. Return to DM Planner for next turn
+        
+        Args:
+            state: Current GameState
+            config: Optional LangGraph config (session ID, etc.)
+            
+        Returns:
+            GameState after turn execution
+            
+        Raises:
+            RuntimeError: If turn execution fails
+        """
+        if not self.compiled_graph:
+            logger.debug("Graph not compiled. Building pipeline...")
+            self.build_pipeline()
+
+        session_id = state["metadata"].get("session_id", "default_session")
+        turn = state["metadata"].get("turn", 0)
+
         if config is None:
-            config = {"configurable": {"thread_id": "default_session"}}
+            config = {"configurable": {"thread_id": session_id}}
 
-        # Invoke the graph
-        final_state = await self.compiled_graph.ainvoke(state, config=config)
-        return final_state
+        logger.info(f"Executing turn {turn} (session: {session_id})")
 
-    async def exit_check(self, state: GameState) -> Dict[str, Any]:
+        try:
+            final_state = await self.compiled_graph.ainvoke(state, config=config)
+            logger.debug(f"Turn {turn} completed successfully")
+            return final_state
+
+        except Exception as e:
+            logger.error(f"Turn {turn} execution failed: {e}", exc_info=True)
+            raise RuntimeError(f"Failed to execute turn: {e}") from e
+
+    def _exit_check_node(self, state: GameState) -> GameState:
         """
-        Checks if the user wants to quit the game.
-        This is a placeholder; in a real system, you'd parse the user's input for exit commands.
+        Check if the game should exit based on recent messages.
+        
+        Looks for exit keywords in the last message from the state.
+        Sets state["__end__"] = True if exit is detected.
+        
+        Args:
+            state: Current GameState
+            
+        Returns:
+            Updated GameState
         """
-        # Simple heuristic: if the last message contains "quit" or "exit"
+        exit_keywords = ["quit", "exit", "end", "goodbye", "bye"]
+
         messages = state.get("messages", [])
         if messages:
-            last_message = messages[-1].content.lower()
-            if "quit" in last_message or "exit" in last_message:
-                return {"__end__": True} # Signal to end the graph
+            # Get the last message content
+            last_msg = messages[-1]
+            msg_content = (
+                last_msg.content
+                if hasattr(last_msg, "content")
+                else str(last_msg)
+            )
+            msg_lower = msg_content.lower()
 
-        # If not quitting, continue to the next turn by returning to dm_planner
-        # In LangGraph, we can't directly jump back, so we'll rely on the graph structure
-        # The actual routing is handled by the edges defined above.
-        return {}
+            # Check for exit keywords
+            if any(keyword in msg_lower for keyword in exit_keywords):
+                logger.info("Exit command detected. Ending game.")
+                state["__end__"] = True
 
-# Global instance
+        return state
+
+
+# Global singleton instance
 orchestrator_service = OrchestratorService()
