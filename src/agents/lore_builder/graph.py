@@ -44,7 +44,14 @@ class LoreBuilderAgent(BaseAgent):
 
         system_prompt = """You are an expert World-Building AI. 
         Your task is to create a 'World Bible' that supports the provided Story Blueprint.
-        The world must be game-ready, with distinct regions, conflicts, and NPCs that directly serve the plot."""
+        The world must be game-ready, with distinct regions, conflicts, and NPCs that directly serve the plot.
+        
+        CRITICAL REQUIREMENT: For each Culture object, you MUST provide ALL of these fields:
+        - name: The culture's name (string)
+        - values: List of core values (array of strings, e.g., ["honor", "family", "arcane magic"])
+        - social_structure: REQUIRED - Description of how society is organized (string, e.g., "Hierarchical monarchy with noble bloodlines", "Guild-based councils", "Tribal elders with shamanic traditions")
+        - conflicts: String describing major conflicts or internal struggles
+        """
 
         user_prompt = f"""
         # Input Context
@@ -58,6 +65,11 @@ class LoreBuilderAgent(BaseAgent):
         1. World Name & Tone.
         2. 3 Distinct Regions (Geographically diverse).
         3. 2 Major Cultures (Clashing values).
+           CRITICAL: For EACH culture, you MUST provide:
+           - name: Culture name (e.g., "Stoneborn Dwarves", "Sunfire Elves")
+           - values: Array of core values (e.g., ["craftsmanship", "tradition", "ancestor honor"])
+           - social_structure: How their society is organized - DO NOT OMIT THIS FIELD (examples: "Monarchical dynasty with appointed nobles", "Guild-based apprenticeship system", "Tribal councils with shamanic authority", "Meritocratic warrior society")
+           - conflicts: String describing what they fight about
         4. A defining Historical Event (Myth).
         5. 2 Key NPCs per region (Total 6), with at least one tied to the Main Antagonist.
         """
