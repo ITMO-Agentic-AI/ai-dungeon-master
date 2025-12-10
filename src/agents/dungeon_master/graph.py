@@ -73,5 +73,38 @@ class DungeonMasterAgent(BaseAgent):
 
         return {"messages": [response]}
 
+    async def plan_response(self, state: GameState) -> Dict[str, Any]:
+        """
+        Phase 7a: The Dungeon Master Planner.
+        Receives the player's input (action or question) and decides the next step.
+        Sets a flag ('response_type') in the state to guide routing.
+        """
+        # Get the latest message from the player (assuming it's the last one)
+        messages = state.get("messages", [])
+        player_input = ""
+        if messages:
+            # Assuming the last message is from the player
+            player_input = messages[-1].content
+
+        # Determine if it's an action, a question, or an exit command
+        is_action = any(word in player_input.lower() for word in ["attack", "move", "cast", "use", "take", "open", "go"])
+        is_question = "?" in player_input or any(word in player_input.lower() for word in ["what", "where", "who", "why", "how", "tell me"])
+        is_exit = any(word in player_input.lower() for word in ["quit", "exit", "goodbye"])
+
+        # Set the response type in the state
+        response_type = "unknown"
+        if is_action:
+            response_type = "action"
+        elif is_question:
+            response_type = "question"
+        elif is_exit:
+            response_type = "exit"
+
+        # Return the state update with the response type
+        return {
+            "response_type": response_type,
+            "current_player_input": player_input
+        }
+
     async def process(self, state: GameState) -> Dict[str, Any]:
         return await self.narrate_outcome(state)

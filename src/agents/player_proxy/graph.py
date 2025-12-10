@@ -13,10 +13,10 @@ from pydantic import BaseModel, Field
 from src.core.types import GameState, Player, DnDCharacterStats
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
-from src.services.structured_output import get_structured_output
+from src.services.structured_output import get_structured_output # Assuming this utility exists
 
 
-# 角色输入结构
+# Character input structure
 class PlayerGenInput(BaseModel):
     name: str = Field(default="Unknown", description="Character name")
     class_name: str = Field(default="Adventurer", description="Class name e.g. Warrior")
@@ -37,18 +37,19 @@ class PlayerGenInput(BaseModel):
     current_hit_points: int = 10
     armor_class: int = 10
 
-    # **这里没有id字段, 设为optional, 因为LLM生成的ID过于难以控制, 所以直接代码内生成
+    # **No id field here, set as optional, because LLM-generated IDs are too hard to control,
+    # so generate ID directly in code**
     id: Optional[str] = Field(default=None)
 
 
 class PlayerProxyAgent(BaseAgent):
     """
     Phase 1:
-    - 并行创建角色(Parallel Character Creation)
-    - 使用Send API同时生成多个D&D 5e角色卡
+    - Parallel Character Creation
+    - Use Send API to generate multiple D&D 5e character sheets simultaneously
     Phase 3:
     - Gameplay Loop
-    - 根据环境和记忆模拟player行动
+    - Simulate player actions based on environment and memory
     """
 
     def __init__(self):
@@ -60,31 +61,35 @@ class PlayerProxyAgent(BaseAgent):
         graph.add_node("create_single_character", self.create_single_character)
         graph.add_node("simulate_action", self.simulate_action)
 
+        # NEW: Add the specific update method for gameplay
+        graph.add_node("update_players", self.update_players)
+
         graph.add_conditional_edges("__start__", self.route_step)
 
         graph.add_edge("create_single_character", END)
         graph.add_edge("simulate_action", END)
+        graph.add_edge("update_players", END) # NEW: Edge for player update
 
         return graph
 
-    # 路由逻辑(Map Step Router)
+    # Routing logic (Map Step Router)
     def route_step(self, state: GameState):
         """
-        检查当前状态:
-        - 如果没有玩家 -> 启动并行创建(返回Send列表)
-        - 如果有玩家 -> 进入游戏循环(返回"simulate_action")
+        Check current state:
+        - If no players -> Start parallel creation (return Send list)
+        - If players exist -> Enter gameplay loop (return "simulate_action")
         """
         players = state.get("players", [])
 
-        # 如果players列表为空, 需要初始化生成角色
+        # If the players list is empty, need to initialize character generation
         if not players:
-            # 获取设定(从State中读取)
+            # Get setting (read from State)
             setting = state.get("setting")
             narrative = state.get("narrative")
             world = state.get("world")
 
-            # 获取concepts逻辑
-            concepts = ["Warrior", "Mage", "Rogue"]  # 默认值
+            # Get concepts logic
+            concepts = ["Warrior", "Mage", "Rogue"]  # Default value
             if isinstance(setting, dict):
                 concepts = setting.get("player_concepts", concepts)
             elif hasattr(setting, "player_concepts"):
@@ -110,6 +115,12 @@ class PlayerProxyAgent(BaseAgent):
                 for concept in concepts
             ]
 
+        # NEW LOGIC: Check if it's an update request (e.g., triggered by orchestrator after Judge)
+        outcome = state.get("last_outcome")
+        if outcome:
+            # If there's an outcome from an action affecting players, route to update
+            return "update_players"
+
         return "simulate_action"
 
     async def create_single_character(self, state: dict) -> Dict[str, Any]:
@@ -120,24 +131,24 @@ class PlayerProxyAgent(BaseAgent):
         hook = state.get("story_hook")
         locations = state.get("locations")
 
-        # 确定初始位置ID
+        # Determine initial location ID
         start_loc_id = "unknown_location"
         if locations:
-            # 取第一个可用地点的ID
+            # Take the ID of the first available location
             start_loc_id = list(locations.keys())[0]
 
-        # 构造Prompt
-        system_prompt = """You are an expert D&D 5e Character Creator. 
+        # Construct Prompt
+        system_prompt = """You are an expert D&D 5e Character Creator.
         Your goal is to generate a valid JSON object for a player character."""
 
         user_prompt = f"""
         # Context
         Campaign Hook: {hook}
         Target Archetype: {concept}
-        
+
         # Task
         Create a character profile inside a "character" object.
-        
+
         # REQUIREMENTS (Use EXACT lowercase keys):
         1. "name": Character name.
         2. "class_name": Use "{concept}".
@@ -146,11 +157,11 @@ class PlayerProxyAgent(BaseAgent):
         5. "motivation": One short sentence.
         6. "backstory": Two sentences connecting to hook.
         7. "location_id": Set exactly to "{start_loc_id}".
-        
+
         # STATS (Integers only):
         - "strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma"
         - "max_hit_points", "current_hit_points", "armor_class"
-        
+
         IMPORTANT: Do NOT nest stats. Keep JSON flat.
         """
 
@@ -158,11 +169,11 @@ class PlayerProxyAgent(BaseAgent):
 
         gen_data = await get_structured_output(self.model, messages, PlayerGenInput)
 
-        # 用Python这边的代码来生成ID, 效果比LLM强
+        # Generate ID using Python code here, it's more effective than LLM
         final_id = gen_data.id if gen_data.id else f"player_{uuid.uuid4().hex[:8]}"
 
-        # 构造Player对象(src.core.types.Player)
-        # 手动组装Stats嵌套对象
+        # Construct Player object (src.core.types.Player)
+        # Manually assemble Stats nested object
         stats_obj = DnDCharacterStats(
             strength=gen_data.strength,
             dexterity=gen_data.dexterity,
@@ -178,22 +189,54 @@ class PlayerProxyAgent(BaseAgent):
         final_player = Player(
             id=final_id,
             name=gen_data.name,
-            class_name=gen_data.class_name,  # 使用处理过的class name
+            class_name=gen_data.class_name,  # Use processed class name
             race=gen_data.race,
             background=gen_data.background,
             motivation=gen_data.motivation,
             backstory=gen_data.backstory,
             location_id=start_loc_id,
-            stats=stats_obj,  # 传入组装好的对象
+            stats=stats_obj,  # Pass in the assembled object
         )
 
-        # *返回结果, 因为types.py定义了players是Annotated[List, add]
-        # 所以这里的返回列表会自动追加到总列表中, 不会覆盖
+        # *Return result, because types.py defines players as Annotated[List, add]
+        # So this returned list will be automatically appended to the total list, not overwritten
         return {"players": [final_player]}
+
+    # NEW: Specific method for updating player sheets based on action outcomes during gameplay
+    async def update_players(self, state: GameState) -> Dict[str, Any]:
+        """
+        Phase 2d: Update Player Sheets based on action outcome during gameplay.
+        Modifies player character sheets (HP, inventory, conditions, etc.) based on the result of an action.
+        """
+        print("--- [Player Proxy] Updating Player Sheets (Gameplay) ---")
+
+        # Get the outcome of the action
+        outcome = state.get("last_outcome")
+        # Get the current list of players
+        players = state.get("players", [])
+
+        # Example logic: If the action involved taking damage, update the player's HP
+        # This is a placeholder; you would implement specific logic based on the outcome
+        # For example, update inventory, apply conditions, etc.
+        if outcome and hasattr(outcome, 'stat_changes'):
+            for change in outcome.stat_changes:
+                for player in players:
+                    if player.id == change.target_id:
+                        if change.stat_name == "hp":
+                            # Assuming player has stats object
+                            player.stats.current_hit_points = change.new_value
+                            # Also update the player's current_hp if it's a separate field
+                            player.current_hp = player.stats.current_hit_points
+                            print(f"  Updated {player.name}'s HP to {player.stats.current_hit_points}")
+
+        # Return the potentially updated players list
+        # For now, just return the existing list unless modified by the logic above
+        return {"players": players}
+
 
     # Phase 3: Gameplay Loop
     async def simulate_action(self, state: GameState, runtime: Runtime = None) -> dict[str, Any]:
-        # 读取世界状态(兼容Pydantic对象访问)
+        # Read world state (compatible with Pydantic object access)
         world = state.get("world")
         if world:
             time_val = getattr(world, "global_time", 0)
@@ -203,15 +246,15 @@ class PlayerProxyAgent(BaseAgent):
         else:
             context_desc = "Unknown environment."
 
-        # 读取角色卡
+        # Read character sheet
         players = state.get("players", [])
         if not players:
             return {"messages": []}
 
-        # 暂时只模拟第一个玩家, 或者活跃玩家
+        # Temporarily simulate only the first player, or the active player
         active_player = players[0]
 
-        # 兼容Dict和Pydantic对象的属性读取
+        # Compatible attribute reading for Dict and Pydantic objects
         if isinstance(active_player, dict):
             p_name = active_player.get("name", "Unknown")
             p_class = active_player.get("class_name", "Unknown")
@@ -225,12 +268,12 @@ class PlayerProxyAgent(BaseAgent):
             p_bg = getattr(active_player, "background", "Unknown")
             p_backstory = getattr(active_player, "backstory", "")
 
-        # 读取记忆(Messages)
+        # Read memory (Messages)
         messages = state.get("messages", [])
         recent_msgs = messages[-5:]
         history_text = ""
         for msg in recent_msgs:
-            # 兼容不同类型的Message对象
+            # Compatible with different types of Message objects
             m_type = getattr(msg, "type", "unknown")
             if isinstance(msg, dict):
                 m_type = msg.get("type", "unknown")
@@ -244,7 +287,7 @@ class PlayerProxyAgent(BaseAgent):
         if not history_text:
             history_text = "[System]: The adventure begins."
 
-        # 构造Prompt
+        # Construct Prompt
         prompt = (
             f"Roleplay Instructions:\n"
             f"You are {p_name}, a Level 1 {p_class}.\n"
@@ -256,7 +299,7 @@ class PlayerProxyAgent(BaseAgent):
             f"Focus on action and intent. Do not dictate the outcome."
         )
 
-        # 调用模型(文本输出)
+        # Call model (text output)
         try:
             response = await self.model.ainvoke(prompt)
             action_text = (
@@ -265,7 +308,7 @@ class PlayerProxyAgent(BaseAgent):
         except Exception as e:
             action_text = f"{p_name} hesitates, unsure what to do. (Error: {e})"
 
-        # 返回结果
+        # Return result
         new_message = {"type": "human", "name": p_name, "content": action_text}
 
         return {"messages": [new_message]}
@@ -276,5 +319,5 @@ class PlayerProxyAgent(BaseAgent):
             self.compile()
         return await self.graph.ainvoke(state)
 
-
-graph = PlayerProxyAgent().build_graph().compile()
+# Optional: Compile the graph if needed elsewhere
+# graph = PlayerProxyAgent().build_graph().compile()
