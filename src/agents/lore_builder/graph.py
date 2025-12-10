@@ -82,6 +82,60 @@ class LoreBuilderAgent(BaseAgent):
 
         # Return state update (merges into GameState['world'])
         return {"world": new_world_state}
+    
+
+    async def answer_question(self, state: GameState) -> Dict[str, Any]:
+        """
+        Phase 2b: Answer Player Question.
+        Uses the 'narrative' blueprint and 'world' lore to answer a specific question.
+        """
+        # Get the player's question
+        player_input = state.get("current_player_input", "")
+        narrative = state["narrative"]
+        world = state["world"]
+
+        # Construct the Prompt
+        system_prompt = """You are an expert World-Building AI. 
+        Your task is to answer a player's question about the world using the provided lore.
+        Be concise and informative, fitting the campaign theme."""
+
+        user_prompt = f"""
+        # Campaign Context
+        Theme: {narrative.title}
+        Story Summary: {narrative.story_arc_summary}
+        Major Factions: {', '.join(narrative.major_factions)}
+
+        # World State
+        Overview: {world.overview}
+        Regions: {[r.name for r in world.regions]}
+        Cultures: {[c.name for c in world.cultures]}
+
+        # Player Question
+        {player_input}
+
+        # Task
+        Provide a short, direct answer to the player's question based on the lore.
+        """
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+            ("user", user_prompt)
+        ])
+
+        # Generate Answer
+        chain = prompt | self.structured_llm
+        bible: WorldBible = await chain.ainvoke({})
+
+        # Convert LLM output to a simple string for the outcome
+        answer = f"Based on the world's lore: {bible.world_summary}"
+
+        # Return state update (we'll use a simple dict for outcome)
+        return {
+            "last_outcome": {
+                "success": True,
+                "narrative_result": answer
+            }
+        }
 
     async def process(self, state: GameState) -> Dict[str, Any]:
         return await self.build_lore(state)

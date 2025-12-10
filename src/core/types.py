@@ -2,6 +2,7 @@ from typing import TypedDict, Annotated, List, Dict, Optional, Any
 from pydantic import BaseModel, Field
 from langgraph.graph.message import add_messages
 from langchain_core.messages import BaseMessage
+import operator
 import uuid
 
 class Setting(BaseModel):
@@ -247,7 +248,9 @@ class GameState(TypedDict):
     setting: Setting
     narrative: NarrativeState
     world: WorldState
-    players: List[Player]
+    # 增加operator.add防止角色相互覆盖
+    players: Annotated[List[Player], operator.add]
+
     actions: List[Action]
     combat: CombatState | None
     rules_context: RulesContext
@@ -259,3 +262,4 @@ class GameState(TypedDict):
     current_action: Optional[Action]
     last_outcome: Optional[dict] # Or specific outcome type if defined
     last_verdict: Optional[JudgeVerdict]
+    response_type: str # Added for DM Planner routing
