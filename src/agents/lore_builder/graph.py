@@ -37,9 +37,10 @@ class LoreBuilderAgent(BaseAgent):
         """
         # Retrieve Phase 1 output
         narrative = state["narrative"]
-
         setting = state["setting"]
-        theme = setting.theme if hasattr(setting, 'theme') else setting.get('theme', 'Fantasy')
+        
+        # FIXED: theme is in Setting, not NarrativeState
+        theme = setting.theme
 
         system_prompt = """You are an expert World-Building AI. 
         Your task is to create a 'World Bible' that supports the provided Story Blueprint.
@@ -102,7 +103,7 @@ class LoreBuilderAgent(BaseAgent):
         npcs_info = ""
         if world and world.important_npcs:
             npcs_info = "\nKey NPCs:\n" + "\n".join(
-                [f"- {npc.name}: {npc.description}" for npc in world.important_npcs[:3]]
+                [f"- {npc.name}: {npc.role}" for npc in world.important_npcs[:3]]
             )
         
         regions_info = ""
