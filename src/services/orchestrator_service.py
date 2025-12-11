@@ -56,7 +56,7 @@ class OrchestratorService:
         # Instantiate all agents
         self.architect = StoryArchitectAgent()
         self.lore_builder = LoreBuilderAgent()
-        self.world_engine = WorldEngineEngine()
+        self.world_engine = WorldEngineAgent()
         # CRITICAL: Use PlayerProxyAgent, not PlayerCreatorAgent
         self.player_proxy = PlayerProxyAgent()
 
