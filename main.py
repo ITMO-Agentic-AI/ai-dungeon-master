@@ -330,22 +330,42 @@ async def run_game_loop() -> None:
     if narrative:
         print(f"\n📖 Campaign: {narrative.title}")
         print(f"📝 {narrative.tagline}")
-    
+
     players = state.get("players", [])
     if players:
         print("\n👥 Your Characters:")
+        seen_ids = set()
         for player in players:
+            pid = getattr(player, "id", None)
+            if pid is not None and pid in seen_ids:
+                continue
+            if pid is not None:
+                seen_ids.add(pid)
+
             print(f"  • {player.name} - {player.race} {player.class_name}")
             print(f"    {player.motivation}")
     else:
         logger.warning("No players were created during world initialization")
-    
+
+    # ✅ Show initial DM narration produced during Phase 1
+    messages = state.get("messages", [])
+    if messages:
+        print("\n" + "=" * 60)
+        print("📜 DUNGEON MASTER")
+        print("=" * 60)
+        for msg in messages:
+            content = getattr(msg, "content", str(msg))
+            print(f"\n{content}")
+    else:
+        logger.warning("No DM messages generated during world initialization")
+
     print("\n" + "=" * 60)
     print("🏰 ADVENTURE BEGINS 🏰")
     print("=" * 60)
     print("\n(Type 'quit', 'exit', 'end', or 'q' to quit)\n")
 
     logger.info("Starting Phase 2: Gameplay Loop")
+
 
     # Step 3: Main game loop
     try:
