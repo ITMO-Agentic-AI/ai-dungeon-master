@@ -27,14 +27,15 @@ class OrchestratorService:
     
     **CRITICAL**: This orchestrator integrates with agents that have their own internal LangGraphs.
     
-    Phase 1: Setup Pipeline
+    Phase 1: Setup Pipeline (returns to caller on completion)
     - StoryArchitectAgent.plan_narrative() -> generates narrative blueprint
     - LoreBuilderAgent.build_lore() -> generates world lore
     - WorldEngineAgent.instantiate_world() -> creates locations and NPCs
     - PlayerProxyAgent.process() -> USES INTERNAL SEND() for parallel character creation
     - DungeonMasterAgent.narrate_initial() -> initial narration
+    - phase1_complete -> END (exits setup phase)
     
-    Phase 2: Gameplay Loop
+    Phase 2: Gameplay Loop (called from main.py each turn)
     - DungeonMasterAgent.plan_response() -> decides next action
     - ActionResolverAgent.resolve_action() -> handles player action
     - JudgeAgent.evaluate_turn() -> validates outcomes
@@ -55,7 +56,7 @@ class OrchestratorService:
         # Instantiate all agents
         self.architect = StoryArchitectAgent()
         self.lore_builder = LoreBuilderAgent()
-        self.world_engine = WorldEngineAgent()
+        self.world_engine = WorldEngineEngine()
         # CRITICAL: Use PlayerProxyAgent, not PlayerCreatorAgent
         self.player_proxy = PlayerProxyAgent()
 
@@ -70,26 +71,28 @@ class OrchestratorService:
         """
         Constructs the Master Graph connecting all agents.
         
-        CRITICAL: Each agent's method signatures must match the actual implementation.
-        For agents with internal LangGraphs (PlayerProxyAgent), call their process() method.
+        **CRITICAL FIX**: Graph now has two separate flows:
+        - Phase 1: Setup pipeline that exits after narrate_initial
+        - Phase 2: Gameplay loop that runs per turn
+        
+        Phase 1 and 2 are NO LONGER in the same graph to prevent infinite loops.
         """
         try:
             builder = StateGraph(GameState)
 
             # ============================================================
-            # 1. REGISTER NODES - Use ACTUAL methods from agents
+            # 1. REGISTER NODES
             # ============================================================
 
             # --- Phase 1: Initialization Pipeline ---
             builder.add_node("story_architect", self.architect.plan_narrative)
             builder.add_node("lore_builder", self.lore_builder.build_lore)
             builder.add_node("world_engine", self.world_engine.instantiate_world)
-            
-            # CRITICAL FIX: PlayerProxyAgent has process() method that handles parallel creation
-            # Its internal graph uses Send() to create characters in parallel
             builder.add_node("player_creator", self.player_proxy.process)
-            
             builder.add_node("initial_dm", self.dm.narrate_initial)
+            
+            # NEW: Phase 1 exit node
+            builder.add_node("phase1_complete", self._phase1_complete_node)
 
             # --- Phase 2: Gameplay Loop ---
             builder.add_node("dm_planner", self.dm.plan_response)
@@ -97,10 +100,7 @@ class OrchestratorService:
             builder.add_node("lore_builder_question", self.lore_builder.answer_question)
             builder.add_node("judge", self.judge.evaluate_turn)
             builder.add_node("world_engine_update", self.world_engine.update_world)
-            
-            # CRITICAL FIX: Use player_proxy.update_players() for Phase 2 updates
             builder.add_node("player_creator_update", self.player_proxy.update_players)
-            
             builder.add_node("director", self.director.direct_scene)
             builder.add_node("dm_outcome", self.dm.narrate_outcome)
             builder.add_node("exit_check", self._exit_check_node)
@@ -200,12 +200,15 @@ class OrchestratorService:
             # --- Entry Point ---
             builder.add_conditional_edges(START, route_entry)
 
-            # --- Phase 1: Setup Pipeline (Linear Flow) ---
+            # --- Phase 1: Setup Pipeline (Linear Flow) -> EXIT ---
             builder.add_edge("story_architect", "lore_builder")
             builder.add_edge("lore_builder", "world_engine")
             builder.add_edge("world_engine", "player_creator")
             builder.add_edge("player_creator", "initial_dm")
-            builder.add_edge("initial_dm", "dm_planner")
+            
+            # FIX: Phase 1 ends here, does NOT go to dm_planner
+            builder.add_edge("initial_dm", "phase1_complete")
+            builder.add_edge("phase1_complete", END)
 
             # --- Phase 2: Main Gameplay Loop ---
             builder.add_conditional_edges("dm_planner", route_dm_plan)
@@ -251,6 +254,8 @@ class OrchestratorService:
         3. WorldEngineAgent creates locations and NPCs
         4. PlayerProxyAgent.process() creates characters IN PARALLEL (via Send API)
         5. DungeonMasterAgent provides initial narration
+        6. phase1_complete marks end of setup
+        7. Graph exits and returns state
         
         Args:
             state: Initial GameState
@@ -269,7 +274,7 @@ class OrchestratorService:
         config = {"configurable": {"thread_id": session_id}}
 
         logger.info(f"Starting world initialization (session: {session_id})")
-        logger.info("Phase 1: Story Architect -> Lore Builder -> World Engine -> Player Creator (PARALLEL) -> Initial DM")
+        logger.info("Phase 1: Story Architect -> Lore Builder -> World Engine -> Player Creator (PARALLEL) -> Initial DM -> Complete")
 
         try:
             final_state = await self.compiled_graph.ainvoke(state, config=config)
@@ -297,6 +302,9 @@ class OrchestratorService:
     ) -> GameState:
         """
         Phase 2: Execute a single game turn in the main gameplay loop.
+        
+        This is called AFTER Phase 1 completes.
+        It starts at dm_planner and runs the gameplay loop.
         
         Flow:
         1. DM Planner decides: action, question, or exit
@@ -334,6 +342,22 @@ class OrchestratorService:
         except Exception as e:
             logger.error(f"Turn {turn} execution failed: {e}", exc_info=True)
             raise RuntimeError(f"Failed to execute turn: {e}") from e
+
+    def _phase1_complete_node(self, state: GameState) -> GameState:
+        """
+        Marks the end of Phase 1 (world initialization).
+        
+        This node signals that setup is complete and the graph should exit.
+        Called before returning to main.py for gameplay loop.
+        
+        Args:
+            state: Current GameState after initial DM narration
+            
+        Returns:
+            Unchanged GameState (ready for Phase 2 in main.py)
+        """
+        logger.info("Phase 1 setup complete. Ready for gameplay.")
+        return state
 
     def _exit_check_node(self, state: GameState) -> GameState:
         """
