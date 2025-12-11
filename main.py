@@ -221,7 +221,9 @@ async def get_user_action(state: GameState) -> Action:
     """
     Get player action from user input.
     
-    Parses natural language input and classifies action type.
+    IMPROVED: No placeholder examples shown. The DM narrative will contain
+    embedded action suggestions naturally woven into the story. This function
+    simply accepts the player's input without prescriptive examples.
     
     Args:
         state: Current GameState (for player info)
@@ -236,27 +238,31 @@ async def get_user_action(state: GameState) -> Action:
     
     player = players[0]
     
-    print("\nWhat do you do?")
-    print("(Examples: 'attack the goblin', 'search the room', 'talk to the merchant')")
+    # REMOVED: Placeholder examples like "attack the goblin", "search the room", etc.
+    # Instead, the narrative itself from DungeonMaster will contain embedded prompts
+    # that naturally suggest what the player might do next.
+    print("\n", end="")
     description = input("> ").strip()
     
     if not description:
-        description = "look around"
+        description = "look around and wait for what happens next"
     
     # Classify action type based on keywords
     action_type = "other"
     desc_lower = description.lower()
     
-    if any(word in desc_lower for word in ["attack", "hit", "strike", "fight", "combat"]):
+    if any(word in desc_lower for word in ["attack", "hit", "strike", "fight", "combat", "stab", "shoot"]):
         action_type = "attack"
-    elif any(word in desc_lower for word in ["move", "go", "walk", "travel", "enter", "exit"]):
+    elif any(word in desc_lower for word in ["move", "go", "walk", "travel", "enter", "exit", "approach", "follow"]):
         action_type = "move"
-    elif any(word in desc_lower for word in ["search", "investigate", "examine", "look", "check", "inspect"]):
+    elif any(word in desc_lower for word in ["search", "investigate", "examine", "look", "check", "inspect", "observe"]):
         action_type = "investigate"
-    elif any(word in desc_lower for word in ["talk", "speak", "say", "ask", "dialogue", "chat"]):
+    elif any(word in desc_lower for word in ["talk", "speak", "say", "ask", "dialogue", "chat", "greet", "respond"]):
         action_type = "social"
-    elif any(word in desc_lower for word in ["cast", "spell", "magic"]):
+    elif any(word in desc_lower for word in ["cast", "spell", "magic", "invoke"]):
         action_type = "magic"
+    elif any(word in desc_lower for word in ["take", "grab", "pick", "use", "open", "drink", "eat"]):
+        action_type = "interact"
     
     action = Action(
         player_id=player.id,
@@ -277,7 +283,7 @@ async def run_game_loop() -> None:
     Phases:
     1. Initialize game state
     2. Setup world (Phase 1)
-    3. Main gameplay loop (Phase 2)
+    3. Main gameplay loop (Phase 2) - narrative-driven with embedded prompts
     4. Cleanup
     
     Raises:
