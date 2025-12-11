@@ -1,8 +1,9 @@
 import asyncio
 import sys
 import logging
+import re
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 from src.core.types import (
     GameState,
@@ -217,16 +218,86 @@ def display_world_state(state: GameState) -> None:
     print("=" * 60)
 
 
-async def get_user_action(state: GameState) -> Action:
+def extract_action_suggestions(narrative: str) -> List[str]:
+    """
+    Extract action suggestions from DM's narrative.
+    
+    Looks for narrative prompts that suggest what the player might do:
+    - Lines starting with: "A ", "You ", "Suddenly", "Before", "The ", "Something"
+    - Lines ending with ellipsis (...)
+    - Questions posed to the player
+    - Sentences with action verbs: "lies", "emerges", "awaits", "notices", etc.
+    
+    Args:
+        narrative: The DM's narrative text
+        
+    Returns:
+        List of action suggestions extracted from the narrative
+    """
+    if not narrative:
+        return []
+    
+    suggestions = []
+    
+    # Split into sentences
+    sentences = re.split(r'(?<=[.!?])\s+', narrative)
+    
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        
+        # Look for action suggestion patterns
+        prompt_starters = [
+            "A ", "You ", "Suddenly", "Before", "The ", "Something",
+            "Your", "A low", "A sudden", "A soft", "Behind",
+            "Ahead", "To your", "You notice", "You realize", "You spot",
+            "From", "Beyond", "Beneath"
+        ]
+        
+        is_prompt = False
+        for starter in prompt_starters:
+            if sentence.startswith(starter) and len(sentence) > 10:
+                is_prompt = True
+                break
+        
+        # Also look for questions or uncertain phrases
+        if '?' in sentence or '...' in sentence:
+            is_prompt = True
+        
+        # Look for action-oriented sentences
+        action_words = [
+            "lies", "awaits", "emerges", "appears", "glints",
+            "echoes", "beckons", "calls", "looms", "gleams",
+            "stretches", "beckons", "waits", "stands", "sits",
+            "moves", "shifts", "flickers", "shimmers"
+        ]
+        
+        if any(word in sentence.lower() for word in action_words):
+            is_prompt = True
+        
+        # Add if it's a good suggestion and not too short
+        if is_prompt and len(sentence) > 15:
+            # Remove markdown/formatting
+            sentence = re.sub(r'\*\*', '', sentence)  # Remove bold
+            sentence = re.sub(r'\*', '', sentence)    # Remove italics
+            sentence = re.sub(r'>', '', sentence)     # Remove blockquotes
+            suggestions.append(sentence)
+    
+    # Return up to 3 suggestions
+    return suggestions[:3]
+
+
+async def get_user_action(state: GameState, suggestions: Optional[List[str]] = None) -> Action:
     """
     Get player action from user input.
     
-    IMPROVED: No placeholder examples shown. The DM narrative will contain
-    embedded action suggestions naturally woven into the story. This function
-    simply accepts the player's input without prescriptive examples.
+    IMPROVED: Shows action suggestions extracted from DM's narrative as hints.
+    Player can use them as inspiration or write their own action.
     
     Args:
         state: Current GameState (for player info)
+        suggestions: Optional list of action suggestions from narrative
         
     Returns:
         Action: The player's action
@@ -238,10 +309,14 @@ async def get_user_action(state: GameState) -> Action:
     
     player = players[0]
     
-    # REMOVED: Placeholder examples like "attack the goblin", "search the room", etc.
-    # Instead, the narrative itself from DungeonMaster will contain embedded prompts
-    # that naturally suggest what the player might do next.
-    print("\n", end="")
+    # Show suggestions if available
+    if suggestions and len(suggestions) > 0:
+        print("\n💡 What might you do?")
+        for i, suggestion in enumerate(suggestions, 1):
+            print(f"   {i}. {suggestion}")
+        print()
+    
+    print("", end="")
     description = input("> ").strip()
     
     if not description:
@@ -387,7 +462,19 @@ async def run_game_loop() -> None:
             
             # Get player action
             try:
-                action = await get_user_action(state)
+                # Extract action suggestions from previous narration
+                suggestions = []
+                messages = state.get("messages", [])
+                if messages and turn > 1:  # Don't show suggestions on first turn
+                    last_message = messages[-1]
+                    content = (
+                        last_message.content 
+                        if hasattr(last_message, 'content') 
+                        else str(last_message)
+                    )
+                    suggestions = extract_action_suggestions(content)
+                
+                action = await get_user_action(state, suggestions)
             except KeyboardInterrupt:
                 logger.info("User interrupted during action input")
                 break
