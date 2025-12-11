@@ -1,6 +1,7 @@
 import asyncio
 import sys
-import logging
+# import logging
+from src.services.logging_service import logger
 from datetime import datetime
 from typing import Optional
 
@@ -17,16 +18,16 @@ from src.core.types import (
 from src.services.orchestrator_service import orchestrator_service
 from src.core.config import get_settings
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('game.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+# # Setup logging
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+#     handlers=[
+#         logging.FileHandler('game.log'),
+#         logging.StreamHandler()
+#     ]
+# )
+# logger = logging.getLogger(__name__)
 
 
 async def initialize_game_state() -> GameState:
@@ -39,7 +40,7 @@ async def initialize_game_state() -> GameState:
     Returns:
         GameState: Fresh game state with all fields initialized
     """
-    logger.info("Initializing fresh game state")
+    logger.log_event("System", "Init", "Initializing fresh game state")
     
     # Create initial storyline (Phase 1 will populate this)
     initial_storyline = Storyline(nodes=[], current_phase="Intro")
@@ -128,7 +129,7 @@ async def initialize_game_state() -> GameState:
         "__end__": False,  # Set by exit_check_node
     }
     
-    logger.debug(f"GameState initialized with session_id: {session_id}")
+    logger.log_event("System", "Debug", f"GameState initialized: {session_id}", level="debug")
     return state
 
 
@@ -152,10 +153,10 @@ def validate_game_state(state: GameState) -> bool:
     
     for field in required_fields:
         if field not in state:
-            logger.error(f"Missing required field in GameState: {field}")
+            logger.log_event("System", "Error", f"Missing required field: {field}", level="error")
             return False
     
-    logger.debug("GameState validation passed")
+    logger.log_event("System", "Debug", "GameState validation passed")
     return True
 
 
@@ -176,7 +177,7 @@ def display_world_state(state: GameState) -> None:
     world = state.get("world")
     
     if not world:
-        logger.warning("No world state to display")
+        logger.log_event("System", "Warning", "No world state to display", level="warning")
         return
     
     # Get player's current location
@@ -231,7 +232,7 @@ async def get_user_action(state: GameState) -> Action:
     """
     players = state.get("players", [])
     if not players:
-        logger.error("No players in game state")
+        logger.log_event("System", "Error", "No players in game state", level="error")
         raise RuntimeError("Cannot get action - no players")
     
     player = players[0]
@@ -266,7 +267,7 @@ async def get_user_action(state: GameState) -> Action:
         result=None,
     )
     
-    logger.debug(f"Player action created: type={action_type}, description={description}")
+    logger.log_event("Player", "Action", f"{action.description} ({action.type})")
     return action
 
 
@@ -299,15 +300,15 @@ async def run_game_loop() -> None:
     print("=" * 60)
 
     # Step 1: Initialize fresh game state
-    logger.info("=" * 60)
-    logger.info("STARTING NEW GAME")
-    logger.info("=" * 60)
+    print("=" * 60)
+    logger.log_event("System", "Start", "STARTING NEW GAME")
+    print("=" * 60)
     
     state = await initialize_game_state()
     
     # Validate state
     if not validate_game_state(state):
-        logger.error("Initial GameState validation failed")
+        logger.log_event("System", "Error", "Initial GameState validation failed", level="error")
         print("\n❌ Failed to initialize game (invalid state)")
         sys.exit(1)
 
@@ -315,12 +316,17 @@ async def run_game_loop() -> None:
     print("\n🎲 Initializing game world...")
     print("This may take a moment as the AI creates your adventure...\n")
     
-    logger.info("Starting Phase 1: World Initialization")
+    logger.log_event("System", "Phase 1", "Starting World Initialization")
     
     try:
         state = await orchestrator_service.initialize_world(state)
+
+        world = state.get("world")  # new add
+        if world:
+            logger.log_event("World", "Created", f"World '{state['narrative'].title}' created with {len(world.regions)} regions.")
+
     except Exception as e:
-        logger.error(f"Phase 1 failed: {e}", exc_info=True)
+        logger.log_event("System", "Error", f"Phase 1 Failed: {e}", level="error")
         print(f"\n❌ Failed to initialize world: {e}")
         sys.exit(1)
 
@@ -338,14 +344,13 @@ async def run_game_loop() -> None:
             print(f"  • {player.name} - {player.race} {player.class_name}")
             print(f"    {player.motivation}")
     else:
-        logger.warning("No players were created during world initialization")
-    
+        logger.log_event("System", "Warning", "No players were created during world initialization", level="warning")
     print("\n" + "=" * 60)
     print("🏰 ADVENTURE BEGINS 🏰")
     print("=" * 60)
     print("\n(Type 'quit', 'exit', 'end', or 'q' to quit)\n")
 
-    logger.info("Starting Phase 2: Gameplay Loop")
+    logger.log_event("System", "Phase 2", "Starting Gameplay Loop")
 
     # Step 3: Main game loop
     try:
@@ -363,16 +368,16 @@ async def run_game_loop() -> None:
             try:
                 action = await get_user_action(state)
             except KeyboardInterrupt:
-                logger.info("User interrupted during action input")
+                logger.log_event("User interrupted during action input")
                 break
             except Exception as e:
-                logger.error(f"Failed to get user action: {e}")
+                logger.log_event("System", "Error", f"Failed to get user action: {e}", level="error")
                 print(f"\n❌ Error getting action: {e}")
                 continue
             
             # Check for exit keywords
             if action.description.lower() in ["quit", "exit", "end", "q"]:
-                logger.info("Player requested to quit")
+                logger.log_event("System", "Info", "Player requested to quit")
                 print("\n👋 Thanks for playing!")
                 break
             
@@ -381,13 +386,13 @@ async def run_game_loop() -> None:
             state["response_type"] = "action"  # This must be set for routing!
 
             print("\n⚙️  Resolving action...")
-            logger.debug(f"Turn {turn}: Executing {action.type} action")
+            logger.log_event("System", "Debug", f"Turn {turn}: Executing {action.type} action", level="debug")
             
             # Execute turn through orchestrator
             try:
                 state = await orchestrator_service.execute_turn(state)
             except Exception as e:
-                logger.error(f"Turn {turn} execution failed: {e}", exc_info=True)
+                logger.log_event("System", "Error", f"Turn {turn} execution failed: {e}", level="error")
                 print(f"\n❌ Error during turn: {e}")
                 continue
 
@@ -400,25 +405,25 @@ async def run_game_loop() -> None:
                 print("=" * 60)
                 
                 # Extract message content
-                content = (
-                    last_message.content 
-                    if hasattr(last_message, 'content') 
-                    else str(last_message)
+                content = getattr(
+                    last_message,
+                    'content',
+                    str(last_message)
                 )
-                print(f"\n{content}\n")
+                logger.log_event("DM", "Narrative", content)
             else:
-                logger.warning(f"No messages generated for turn {turn}")
+                logger.log_event("System", "Warning", f"No DM message for turn {turn}", level="warning")
 
         # End of game loop
         if turn >= max_turns:
-            logger.warning(f"Reached maximum turns ({max_turns})")
+            logger.log_event("System", "Warning", f"Reached maximum turns ({max_turns})", level="warning")
             print(f"\n🛑 Reached maximum turns ({max_turns}). Session ended.")
 
     except KeyboardInterrupt:
-        logger.info("Game interrupted by user (Ctrl+C)")
+        logger.log_event("System", "Info", "Game interrupted by user (Ctrl+C)")
         print("\n\n👋 Session interrupted by user.")
     except Exception as e:
-        logger.error(f"Unexpected error in game loop: {e}", exc_info=True)
+        logger.log_event("System", "Error", f"Unexpected error in gameloop: {e}", level="error")
         print(f"\n❌ Unexpected error: {e}")
     
     # Cleanup
@@ -427,7 +432,7 @@ async def run_game_loop() -> None:
     print(f"Total turns: {turn}")
     print("=" * 60)
     
-    logger.info(f"Game ended after {turn} turns")
+    logger.log_event("System", "End", f"Game ended after {turn} turns")
 
 
 def main() -> None:
@@ -439,11 +444,11 @@ def main() -> None:
     try:
         asyncio.run(run_game_loop())
     except KeyboardInterrupt:
-        logger.info("Application shutdown requested")
+        logger.log_event("System", "Info", "Application shutdown requested")
         print("\nShutting down...")
         sys.exit(0)
     except Exception as e:
-        logger.critical(f"Critical error in main: {e}", exc_info=True)
+        logger.log_event("System", "Critical", f"Critical error in main: {e}", level="error")
         print(f"\n❌ Critical error: {e}")
         import traceback
         traceback.print_exc()
