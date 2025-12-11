@@ -28,20 +28,20 @@ class OrchestratorService:
     **CRITICAL**: This orchestrator integrates with agents that have their own internal LangGraphs.
     
     Phase 1: Setup Pipeline
-    - StoryArchitectAgent.plan_narrative() → generates narrative blueprint
-    - LoreBuilderAgent.build_lore() → generates world lore
-    - WorldEngineAgent.instantiate_world() → creates locations and NPCs
-    - PlayerProxyAgent.process() → USES INTERNAL SEND() for parallel character creation
-    - DungeonMasterAgent.narrate_initial() → initial narration
+    - StoryArchitectAgent.plan_narrative() -> generates narrative blueprint
+    - LoreBuilderAgent.build_lore() -> generates world lore
+    - WorldEngineAgent.instantiate_world() -> creates locations and NPCs
+    - PlayerProxyAgent.process() -> USES INTERNAL SEND() for parallel character creation
+    - DungeonMasterAgent.narrate_initial() -> initial narration
     
     Phase 2: Gameplay Loop
-    - DungeonMasterAgent.plan_response() → decides next action
-    - ActionResolverAgent.resolve_action() → handles player action
-    - JudgeAgent.evaluate_turn() → validates outcomes
-    - WorldEngineAgent.update_world() → updates world state
-    - PlayerProxyAgent.update_players() → updates player state
-    - DirectorAgent.direct_scene() → narrative pacing
-    - DungeonMasterAgent.narrate_outcome() → narrate results
+    - DungeonMasterAgent.plan_response() -> decides next action
+    - ActionResolverAgent.resolve_action() -> handles player action
+    - JudgeAgent.evaluate_turn() -> validates outcomes
+    - WorldEngineAgent.update_world() -> updates world state
+    - PlayerProxyAgent.update_players() -> updates player state
+    - DirectorAgent.direct_scene() -> narrative pacing
+    - DungeonMasterAgent.narrate_outcome() -> narrate results
     """
 
     def __init__(self):
@@ -269,7 +269,7 @@ class OrchestratorService:
         config = {"configurable": {"thread_id": session_id}}
 
         logger.info(f"Starting world initialization (session: {session_id})")
-        logger.info("Phase 1: Story Architect → Lore Builder → World Engine → Player Creator (PARALLEL) → Initial DM")
+        logger.info("Phase 1: Story Architect -> Lore Builder -> World Engine -> Player Creator (PARALLEL) -> Initial DM")
 
         try:
             final_state = await self.compiled_graph.ainvoke(state, config=config)
@@ -300,8 +300,8 @@ class OrchestratorService:
         
         Flow:
         1. DM Planner decides: action, question, or exit
-        2a. If action: resolve → judge → world update → director → narration
-        2b. If question: lore builder → director → narration
+        2a. If action: resolve -> judge -> world update -> director -> narration
+        2b. If question: lore builder -> director -> narration
         3. Return to DM Planner for next turn
         
         Args:
