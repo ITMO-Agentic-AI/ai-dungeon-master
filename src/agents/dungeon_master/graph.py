@@ -1,10 +1,14 @@
 from typing import Any, Dict
+import json
+import logging
 from langgraph.graph import StateGraph
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
 
 from src.core.types import GameState
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
+
+logger = logging.getLogger(__name__)
 
 
 class DungeonMasterAgent(BaseAgent):
@@ -25,7 +29,7 @@ class DungeonMasterAgent(BaseAgent):
         narrate the opening scene to set the mood and establish the initial setting.
         
         IMPROVED: Pure narrative prose with naturally embedded action suggestions.
-        No placeholder lists visible to player.
+        Returns both narrative and explicit action suggestions.
         """
         narrative = state.get("narrative")
         setting = state.get("setting")
@@ -33,7 +37,10 @@ class DungeonMasterAgent(BaseAgent):
         players = state.get("players", [])
 
         if not narrative or not world or not players:
-            return {"messages": [AIMessage(content="The world awaits...")]}
+            return {
+                "messages": [AIMessage(content="The world awaits...")],
+                "action_suggestions": ["Look around", "Wait and listen", "Ask for more information"]
+            }
 
         # Get opening location
         starting_location = None
@@ -67,15 +74,23 @@ CRITICAL RULES:
 1. Start with vivid sensory details of the scene RIGHT NOW. What do the characters see, hear, feel?
 2. Weave character names ({player_names}) naturally into descriptions so they feel present and relevant.
 3. Build atmosphere and tension through subtle foreshadowing and environmental detail.
-4. End with 3 natural narrative prompts for player action (NOT a numbered list, NOT a UI menu):
-   Embed suggestions as narrative flow:
-   - "A low sound echoes from..." or "You notice..." or "Before you lies..." or "Suddenly..."
-   - Let each prompt be a sentence that flows naturally from the scene
-   - Examples: "A sudden sound freezes you", "You spot something glinting", "The path ahead splits"
-5. Use BOLD for key atmospheric details and > blockquotes for mysterious sounds/whispers/dialogue.
-6. ABSOLUTELY NO section headers, tone statements, meta-commentary, or action menus. Pure narrative immersion.
-7. Target length: 250-350 words.
-8. After ending the narrative, DO NOT add any explanatory text, list format, or player guidance.
+4. Use BOLD for key atmospheric details and > blockquotes for mysterious sounds/whispers/dialogue.
+5. ABSOLUTELY NO section headers, tone statements, meta-commentary, or action menus. Pure narrative immersion.
+6. Target length: 250-350 words.
+
+AFTER the narrative (on a new line), you MUST output a JSON block with action suggestions:
+
+```json
+{{
+  "action_suggestions": [
+    "Suggestion 1 - A specific action the player could take",
+    "Suggestion 2 - Another viable action",
+    "Suggestion 3 - A third option"
+  ]
+}}
+```
+
+Make suggestions concrete and action-oriented (e.g., "Talk to the stranger", "Search the desk", "Move toward the sound").
 """
 
         context_block = f"""Campaign: {narrative.title}
@@ -94,22 +109,32 @@ Setting: {location_description}
         ]
 
         response = await self.model.ainvoke(messages)
-        return {"messages": [response]}
+        
+        # Extract narrative and suggestions
+        content = response.content
+        narrative_text, suggestions = self._extract_narrative_and_suggestions(content)
+        
+        return {
+            "messages": [AIMessage(content=narrative_text)],
+            "action_suggestions": suggestions
+        }
 
     async def narrate_outcome(self, state: GameState) -> Dict[str, Any]:
         """
         Phase 7b: The Narrator.
         Synthesizes the mechanical outcome into vivid prose.
         
-        IMPROVED: Generates narrative with naturally embedded next-action prompts,
-        not UI-style action menus.
+        IMPROVED: Returns both narrative and explicit action suggestions in JSON format.
         """
         outcome = state.get("last_outcome")
         directives = state.get("director_directives")
         action = state.get("current_action")
 
         if not outcome:
-            return {"messages": [AIMessage(content="The world waits for your action.")]}
+            return {
+                "messages": [AIMessage(content="The world waits for your action.")],
+                "action_suggestions": ["Look around", "Listen carefully", "Wait"]
+            }
 
         # Get actor's location with safe None checking
         player_map = {p.id: p for p in state.get("players", [])}
@@ -134,16 +159,26 @@ Narrate the IMMEDIATE CONSEQUENCE of the player's action in visceral, immersive 
 CRITICAL RULES:
 1. Show what happens as a direct result of their choice - make it FELT through sensory detail.
 2. {tone_hint} (Weave the mood into word choice and pacing, NOT as explicit statements)
-3. End with 2-3 natural narrative prompts for what might come next:
-   - Embed as narrative flow: "A sound...", "You notice...", "Ahead lies...", "Something..."
-   - Each prompt should be a complete narrative sentence, not a UI list item
-   - Examples: "You realize the danger isn't behind—it's ahead...", "A sudden shape emerges..."
-   - NEVER use numbered lists like "1. Attack" or "2. Search"
-4. Use BOLD for sudden changes/revelations and > blockquotes for reactions or mysterious sounds.
-5. Status: {'SUCCESS - the action had its intended effect' if outcome.success else 'FAILURE - unexpected consequences unfold'}.
-6. Keep the momentum going. The next prompt should feel inevitable, not optional.
-7. ABSOLUTELY NO action menu format. Pure narrative continuation only.
-8. Target length: 150-250 words.
+3. Use BOLD for sudden changes/revelations and > blockquotes for reactions or mysterious sounds.
+4. Status: {'SUCCESS - the action had its intended effect' if outcome.success else 'FAILURE - unexpected consequences unfold'}.
+5. Keep the momentum going. The next prompt should feel inevitable, not optional.
+6. ABSOLUTELY NO action menu format. Pure narrative continuation only.
+7. Target length: 150-250 words.
+
+AFTER the narrative (on a new line), you MUST output a JSON block with action suggestions:
+
+```json
+{{
+  "action_suggestions": [
+    "Suggestion 1 - A specific action the player could take next",
+    "Suggestion 2 - Another viable action",
+    "Suggestion 3 - A third option"
+  ]
+}}
+```
+
+Make suggestions concrete and action-oriented (e.g., "Pursue the fleeing figure", "Examine the symbol", "Ask for help").
+Suggestions should flow naturally from the narrative and provide clear next steps.
 """
 
         context_block = f"""Action: {action.description if action else 'Unknown'}
@@ -157,7 +192,56 @@ Location: {actor_location}
         ]
 
         response = await self.model.ainvoke(messages)
-        return {"messages": [response]}
+        
+        # Extract narrative and suggestions
+        content = response.content
+        narrative_text, suggestions = self._extract_narrative_and_suggestions(content)
+        
+        return {
+            "messages": [AIMessage(content=narrative_text)],
+            "action_suggestions": suggestions
+        }
+
+    def _extract_narrative_and_suggestions(self, content: str) -> tuple[str, list[str]]:
+        """
+        Extract narrative text and action suggestions from LLM response.
+        
+        Expected format:
+        [Narrative text...]
+        
+        ```json
+        {
+          "action_suggestions": ["Suggestion 1", "Suggestion 2", "Suggestion 3"]
+        }
+        ```
+        
+        Args:
+            content: Full response from LLM
+            
+        Returns:
+            Tuple of (narrative_text, suggestions_list)
+        """
+        default_suggestions = ["Look around", "Wait", "Ask for clarification"]
+        
+        try:
+            # Find JSON block
+            if "```json" in content:
+                start = content.find("```json") + len("```json")
+                end = content.find("```", start)
+                if end > start:
+                    json_str = content[start:end].strip()
+                    json_data = json.loads(json_str)
+                    suggestions = json_data.get("action_suggestions", default_suggestions)
+                    
+                    # Extract narrative (everything before JSON block)
+                    narrative = content[:content.find("```json")].strip()
+                    
+                    return narrative, suggestions
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"Failed to parse suggestions JSON: {e}")
+        
+        # Fallback: return full content as narrative with defaults
+        return content, default_suggestions
 
     async def plan_response(self, state: GameState) -> Dict[str, Any]:
         """
