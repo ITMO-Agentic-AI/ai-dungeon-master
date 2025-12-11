@@ -43,6 +43,7 @@ class OrchestratorService:
     - PlayerProxyAgent.update_players() -> updates player state
     - DirectorAgent.direct_scene() -> narrative pacing
     - DungeonMasterAgent.narrate_outcome() -> narrate results
+    - turn_complete -> END (exits single turn)
     """
 
     def __init__(self):
@@ -73,9 +74,10 @@ class OrchestratorService:
         
         **CRITICAL FIX**: Graph now has two separate flows:
         - Phase 1: Setup pipeline that exits after narrate_initial
-        - Phase 2: Gameplay loop that runs per turn
+        - Phase 2: Gameplay loop that runs ONE TURN and exits
         
-        Phase 1 and 2 are NO LONGER in the same graph to prevent infinite loops.
+        Phase 2 now has explicit turn completion that returns to main.py,
+        preventing infinite recursion within a single ainvoke() call.
         """
         try:
             builder = StateGraph(GameState)
@@ -94,7 +96,7 @@ class OrchestratorService:
             # NEW: Phase 1 exit node
             builder.add_node("phase1_complete", self._phase1_complete_node)
 
-            # --- Phase 2: Gameplay Loop ---
+            # --- Phase 2: Single-Turn Gameplay ---
             builder.add_node("dm_planner", self.dm.plan_response)
             builder.add_node("action_resolver", self.resolver.resolve_action)
             builder.add_node("lore_builder_question", self.lore_builder.answer_question)
@@ -104,6 +106,9 @@ class OrchestratorService:
             builder.add_node("director", self.director.direct_scene)
             builder.add_node("dm_outcome", self.dm.narrate_outcome)
             builder.add_node("exit_check", self._exit_check_node)
+            
+            # NEW: Turn completion node
+            builder.add_node("turn_complete", self._turn_complete_node)
 
             logger.debug("Registered all graph nodes")
 
@@ -210,24 +215,26 @@ class OrchestratorService:
             builder.add_edge("initial_dm", "phase1_complete")
             builder.add_edge("phase1_complete", END)
 
-            # --- Phase 2: Main Gameplay Loop ---
+            # --- Phase 2: Single-Turn Gameplay ---
             builder.add_conditional_edges("dm_planner", route_dm_plan)
 
             # Action resolution path: Action -> Judge -> Update path
             builder.add_edge("action_resolver", "judge")
             builder.add_conditional_edges("judge", route_judge)
 
-            # Update path: World -> Players -> Director -> Outcome
+            # Update path: World -> Players -> Director -> Outcome -> TURN COMPLETE
             builder.add_edge("world_engine_update", "player_creator_update")
             builder.add_edge("player_creator_update", "director")
             builder.add_edge("director", "dm_outcome")
 
-            # Question resolution path: Question -> Director -> Outcome
+            # Question resolution path: Question -> Director -> Outcome -> TURN COMPLETE
             builder.add_edge("lore_builder_question", "director")
             builder.add_edge("director", "dm_outcome")
 
-            # Return to next turn
-            builder.add_edge("dm_outcome", "dm_planner")
+            # FIX: dm_outcome now goes to turn_complete, NOT back to dm_planner
+            # This ends the turn and exits the graph, allowing main.py to call execute_turn() again next iteration
+            builder.add_edge("dm_outcome", "turn_complete")
+            builder.add_edge("turn_complete", END)
 
             # Exit path
             builder.add_edge("exit_check", END)
@@ -304,13 +311,17 @@ class OrchestratorService:
         Phase 2: Execute a single game turn in the main gameplay loop.
         
         This is called AFTER Phase 1 completes.
-        It starts at dm_planner and runs the gameplay loop.
+        It starts at dm_planner and runs ONE COMPLETE TURN, then exits.
+        Main.py calls this once per player action.
         
-        Flow:
+        Flow (single turn):
         1. DM Planner decides: action, question, or exit
-        2a. If action: resolve -> judge -> world update -> director -> narration
-        2b. If question: lore builder -> director -> narration
-        3. Return to DM Planner for next turn
+        2a. If action: resolve -> judge -> world update -> director -> narration -> turn complete
+        2b. If question: lore builder -> director -> narration -> turn complete
+        3. Return to main.py for next player input
+        
+        CRITICAL FIX: dm_outcome now routes to turn_complete (END),
+        not back to dm_planner. This prevents infinite loops within ainvoke().
         
         Args:
             state: Current GameState
@@ -357,6 +368,26 @@ class OrchestratorService:
             Unchanged GameState (ready for Phase 2 in main.py)
         """
         logger.info("Phase 1 setup complete. Ready for gameplay.")
+        return state
+
+    def _turn_complete_node(self, state: GameState) -> GameState:
+        """
+        Marks the end of a single game turn.
+        
+        Called after dm_outcome (narration) to signal that this turn is complete.
+        The graph will exit, and main.py will call execute_turn() again for the next turn.
+        
+        This is the CRITICAL FIX for the infinite loop:
+        - Before: dm_outcome -> dm_planner (infinite loop until recursion limit)
+        - After: dm_outcome -> turn_complete -> END (graph exits, main.py continues)
+        
+        Args:
+            state: Current GameState after turn narration
+            
+        Returns:
+            Unchanged GameState (return to main.py)
+        """
+        logger.debug(f"Turn {state['metadata'].get('turn', 0)} complete. Returning to main.py.")
         return state
 
     def _exit_check_node(self, state: GameState) -> GameState:
