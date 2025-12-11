@@ -1,9 +1,8 @@
 import asyncio
 import sys
 import logging
-import re
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional
 
 from src.core.types import (
     GameState,
@@ -127,6 +126,9 @@ async def initialize_game_state() -> GameState:
         # Router Fields (CRITICAL - orchestrator uses these for routing)
         "response_type": "unknown",  # Set by dm.plan_response
         "__end__": False,  # Set by exit_check_node
+        
+        # Action Suggestions (populated by DungeonMaster)
+        "action_suggestions": [],  # DM returns 2-3 suggested actions for player
     }
     
     logger.debug(f"GameState initialized with session_id: {session_id}")
@@ -148,7 +150,7 @@ def validate_game_state(state: GameState) -> bool:
         "actions", "combat", "rules_context", "emergence_metrics",
         "director_directives", "messages", "metadata",
         "current_action", "last_outcome", "last_verdict",
-        "response_type", "__end__"
+        "response_type", "__end__", "action_suggestions"
     ]
     
     for field in required_fields:
@@ -218,86 +220,15 @@ def display_world_state(state: GameState) -> None:
     print("=" * 60)
 
 
-def extract_action_suggestions(narrative: str) -> List[str]:
-    """
-    Extract action suggestions from DM's narrative.
-    
-    Looks for narrative prompts that suggest what the player might do:
-    - Lines starting with: "A ", "You ", "Suddenly", "Before", "The ", "Something"
-    - Lines ending with ellipsis (...)
-    - Questions posed to the player
-    - Sentences with action verbs: "lies", "emerges", "awaits", "notices", etc.
-    
-    Args:
-        narrative: The DM's narrative text
-        
-    Returns:
-        List of action suggestions extracted from the narrative
-    """
-    if not narrative:
-        return []
-    
-    suggestions = []
-    
-    # Split into sentences
-    sentences = re.split(r'(?<=[.!?])\s+', narrative)
-    
-    for sentence in sentences:
-        sentence = sentence.strip()
-        if not sentence:
-            continue
-        
-        # Look for action suggestion patterns
-        prompt_starters = [
-            "A ", "You ", "Suddenly", "Before", "The ", "Something",
-            "Your", "A low", "A sudden", "A soft", "Behind",
-            "Ahead", "To your", "You notice", "You realize", "You spot",
-            "From", "Beyond", "Beneath"
-        ]
-        
-        is_prompt = False
-        for starter in prompt_starters:
-            if sentence.startswith(starter) and len(sentence) > 10:
-                is_prompt = True
-                break
-        
-        # Also look for questions or uncertain phrases
-        if '?' in sentence or '...' in sentence:
-            is_prompt = True
-        
-        # Look for action-oriented sentences
-        action_words = [
-            "lies", "awaits", "emerges", "appears", "glints",
-            "echoes", "beckons", "calls", "looms", "gleams",
-            "stretches", "beckons", "waits", "stands", "sits",
-            "moves", "shifts", "flickers", "shimmers"
-        ]
-        
-        if any(word in sentence.lower() for word in action_words):
-            is_prompt = True
-        
-        # Add if it's a good suggestion and not too short
-        if is_prompt and len(sentence) > 15:
-            # Remove markdown/formatting
-            sentence = re.sub(r'\*\*', '', sentence)  # Remove bold
-            sentence = re.sub(r'\*', '', sentence)    # Remove italics
-            sentence = re.sub(r'>', '', sentence)     # Remove blockquotes
-            suggestions.append(sentence)
-    
-    # Return up to 3 suggestions
-    return suggestions[:3]
-
-
-async def get_user_action(state: GameState, suggestions: Optional[List[str]] = None) -> Action:
+async def get_user_action(state: GameState) -> Action:
     """
     Get player action from user input.
     
-    IMPROVED: Shows action suggestions extracted from DM's narrative as hints.
-    Player can use them as inspiration or write their own action.
+    Shows action suggestions from DM (if available) and accepts player input.
+    Player can use suggestions as-is or write their own action.
     
     Args:
-        state: Current GameState (for player info)
-        suggestions: Optional list of action suggestions from narrative
+        state: Current GameState (for player info and suggestions)
         
     Returns:
         Action: The player's action
@@ -309,7 +240,8 @@ async def get_user_action(state: GameState, suggestions: Optional[List[str]] = N
     
     player = players[0]
     
-    # Show suggestions if available
+    # Show action suggestions from DM (if available)
+    suggestions = state.get("action_suggestions", [])
     if suggestions and len(suggestions) > 0:
         print("\n💡 What might you do?")
         for i, suggestion in enumerate(suggestions, 1):
@@ -358,7 +290,7 @@ async def run_game_loop() -> None:
     Phases:
     1. Initialize game state
     2. Setup world (Phase 1)
-    3. Main gameplay loop (Phase 2) - narrative-driven with embedded prompts
+    3. Main gameplay loop (Phase 2) - with DM-provided action suggestions
     4. Cleanup
     
     Raises:
@@ -462,19 +394,7 @@ async def run_game_loop() -> None:
             
             # Get player action
             try:
-                # Extract action suggestions from previous narration
-                suggestions = []
-                messages = state.get("messages", [])
-                if messages and turn > 1:  # Don't show suggestions on first turn
-                    last_message = messages[-1]
-                    content = (
-                        last_message.content 
-                        if hasattr(last_message, 'content') 
-                        else str(last_message)
-                    )
-                    suggestions = extract_action_suggestions(content)
-                
-                action = await get_user_action(state, suggestions)
+                action = await get_user_action(state)
             except KeyboardInterrupt:
                 logger.info("User interrupted during action input")
                 break
