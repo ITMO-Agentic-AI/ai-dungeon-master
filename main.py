@@ -127,6 +127,9 @@ async def initialize_game_state() -> GameState:
         # Router Fields (CRITICAL - orchestrator uses these for routing)
         "response_type": "unknown",  # Set by dm.plan_response
         "__end__": False,  # Set by exit_check_node
+        
+        # Action Suggestions (populated by DungeonMaster)
+        "action_suggestions": [],  # DM returns 2-3 suggested actions for player
     }
     
     logger.log_event("System", "Debug", f"GameState initialized: {session_id}", level="debug")
@@ -148,7 +151,7 @@ def validate_game_state(state: GameState) -> bool:
         "actions", "combat", "rules_context", "emergence_metrics",
         "director_directives", "messages", "metadata",
         "current_action", "last_outcome", "last_verdict",
-        "response_type", "__end__"
+        "response_type", "__end__", "action_suggestions"
     ]
     
     for field in required_fields:
@@ -222,10 +225,11 @@ async def get_user_action(state: GameState) -> Action:
     """
     Get player action from user input.
     
-    Parses natural language input and classifies action type.
+    Shows action suggestions from DM (if available) and accepts player input.
+    Player can use suggestions as-is or write their own action.
     
     Args:
-        state: Current GameState (for player info)
+        state: Current GameState (for player info and suggestions)
         
     Returns:
         Action: The player's action
@@ -237,27 +241,36 @@ async def get_user_action(state: GameState) -> Action:
     
     player = players[0]
     
-    print("\nWhat do you do?")
-    print("(Examples: 'attack the goblin', 'search the room', 'talk to the merchant')")
+    # Show action suggestions from DM (if available)
+    suggestions = state.get("action_suggestions", [])
+    if suggestions and len(suggestions) > 0:
+        print("\n💡 What might you do?")
+        for i, suggestion in enumerate(suggestions, 1):
+            print(f"   {i}. {suggestion}")
+        print()
+    
+    print("", end="")
     description = input("> ").strip()
     
     if not description:
-        description = "look around"
+        description = "look around and wait for what happens next"
     
     # Classify action type based on keywords
     action_type = "other"
     desc_lower = description.lower()
     
-    if any(word in desc_lower for word in ["attack", "hit", "strike", "fight", "combat"]):
+    if any(word in desc_lower for word in ["attack", "hit", "strike", "fight", "combat", "stab", "shoot"]):
         action_type = "attack"
-    elif any(word in desc_lower for word in ["move", "go", "walk", "travel", "enter", "exit"]):
+    elif any(word in desc_lower for word in ["move", "go", "walk", "travel", "enter", "exit", "approach", "follow"]):
         action_type = "move"
-    elif any(word in desc_lower for word in ["search", "investigate", "examine", "look", "check", "inspect"]):
+    elif any(word in desc_lower for word in ["search", "investigate", "examine", "look", "check", "inspect", "observe"]):
         action_type = "investigate"
-    elif any(word in desc_lower for word in ["talk", "speak", "say", "ask", "dialogue", "chat"]):
+    elif any(word in desc_lower for word in ["talk", "speak", "say", "ask", "dialogue", "chat", "greet", "respond"]):
         action_type = "social"
-    elif any(word in desc_lower for word in ["cast", "spell", "magic"]):
+    elif any(word in desc_lower for word in ["cast", "spell", "magic", "invoke"]):
         action_type = "magic"
+    elif any(word in desc_lower for word in ["take", "grab", "pick", "use", "open", "drink", "eat"]):
+        action_type = "interact"
     
     action = Action(
         player_id=player.id,
@@ -278,7 +291,7 @@ async def run_game_loop() -> None:
     Phases:
     1. Initialize game state
     2. Setup world (Phase 1)
-    3. Main gameplay loop (Phase 2)
+    3. Main gameplay loop (Phase 2) - with DM-provided action suggestions
     4. Cleanup
     
     Raises:
@@ -336,21 +349,42 @@ async def run_game_loop() -> None:
     if narrative:
         print(f"\n📖 Campaign: {narrative.title}")
         print(f"📝 {narrative.tagline}")
-    
+
     players = state.get("players", [])
     if players:
         print("\n👥 Your Characters:")
+        seen_ids = set()
         for player in players:
+            pid = getattr(player, "id", None)
+            if pid is not None and pid in seen_ids:
+                continue
+            if pid is not None:
+                seen_ids.add(pid)
+
             print(f"  • {player.name} - {player.race} {player.class_name}")
             print(f"    {player.motivation}")
     else:
         logger.log_event("System", "Warning", "No players were created during world initialization", level="warning")
+
+    # ✅ Show initial DM narration produced during Phase 1
+    messages = state.get("messages", [])
+    if messages:
+        print("\n" + "=" * 60)
+        print("📜 DUNGEON MASTER")
+        print("=" * 60)
+        for msg in messages:
+            content = getattr(msg, "content", str(msg))
+            print(f"\n{content}")
+    else:
+        logger.log_event("System", "Warning", "No DM messages generated during world initialization", level="warning")
+
     print("\n" + "=" * 60)
     print("🏰 ADVENTURE BEGINS 🏰")
     print("=" * 60)
     print("\n(Type 'quit', 'exit', 'end', or 'q' to quit)\n")
 
     logger.log_event("System", "Phase 2", "Starting Gameplay Loop")
+
 
     # Step 3: Main game loop
     try:

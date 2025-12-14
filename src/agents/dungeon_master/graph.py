@@ -1,10 +1,14 @@
 from typing import Any, Dict
+import json
+import logging
 from langgraph.graph import StateGraph
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
 
 from src.core.types import GameState
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
+
+logger = logging.getLogger(__name__)
 
 
 class DungeonMasterAgent(BaseAgent):
@@ -23,6 +27,9 @@ class DungeonMasterAgent(BaseAgent):
         Phase 6: The Initial Narrator.
         After the world is created and players are established,
         narrate the opening scene to set the mood and establish the initial setting.
+        
+        IMPROVED: Pure narrative prose with naturally embedded action suggestions.
+        Returns both narrative and explicit action suggestions.
         """
         narrative = state.get("narrative")
         setting = state.get("setting")
@@ -30,71 +37,106 @@ class DungeonMasterAgent(BaseAgent):
         players = state.get("players", [])
 
         if not narrative or not world or not players:
-            return {"messages": [AIMessage(content="The world awaits...")]}
+            return {
+                "messages": [AIMessage(content="The world awaits...")],
+                "action_suggestions": ["Look around", "Wait and listen", "Ask for more information"]
+            }
 
-        # Get opening location (usually the first location or a specific starting location)
+        # Get opening location
         starting_location = None
         if world and hasattr(world, 'locations') and world.locations:
-            # Assume the first location is the starting point
             starting_location = list(world.locations.values())[0]
 
         player_names = ", ".join([p.name for p in players])
-
-        # FIX: Get theme from setting, not narrative
-        # narrative.theme doesn't exist - it's in setting.theme
         theme = setting.theme if setting else "Unknown"
 
-        system_prompt = """You are the Dungeon Master.
-        Craft an immersive opening narration that:
-        1. Sets the tone and atmosphere of the campaign
-        2. Introduces the setting and starting location
-        3. Welcomes the players and their characters
-        4. Creates intrigue and adventure hooks
-
-        Format:
-        - Use vivid, evocative language
-        - Use bold for important details or atmosphere
-        - Use > blockquotes for NPC greetings or ambient sounds
-        - Keep it under 300 words to maintain pacing
-        """
-
-        # FIX: Add None checking before accessing starting_location attributes
+        # Build location context
         location_description = ""
         if starting_location and hasattr(starting_location, 'name') and hasattr(starting_location, 'description'):
-            location_description = f"\n\nStarting Location: {starting_location.name}\nDescription: {starting_location.description}"
+            location_description = f"{starting_location.name}: {starting_location.description}"
+        
+        # Get NPC context
+        npcs_present = []
+        if starting_location and hasattr(starting_location, 'npc_ids') and starting_location.npc_ids:
+            if world and hasattr(world, 'active_npcs'):
+                npcs_present = [world.active_npcs.get(npc_id) for npc_id in starting_location.npc_ids[:2] if npc_id in world.active_npcs]
+        
+        npc_context = ""
+        if npcs_present:
+            npc_names = ", ".join([npc.base_data.name for npc in npcs_present if npc and hasattr(npc, 'base_data')])
+            npc_context = f"NPCs present: {npc_names}"
 
-        # FIX: Use narrative.story_arc_summary for tone context instead of non-existent narrative.tone
-        context_block = f"""Campaign Title: {narrative.title}
+        system_prompt = f"""You are the Dungeon Master for a {theme} campaign.
+        
+Craft an IMMERSIVE OPENING that plunges the players directly into the story - IN MEDIA RES.
+
+CRITICAL RULES:
+1. Start with vivid sensory details of the scene RIGHT NOW. What do the characters see, hear, feel?
+2. Weave character names ({player_names}) naturally into descriptions so they feel present and relevant.
+3. Build atmosphere and tension through subtle foreshadowing and environmental detail.
+4. Use BOLD for key atmospheric details and > blockquotes for mysterious sounds/whispers/dialogue.
+5. ABSOLUTELY NO section headers, tone statements, meta-commentary, or action menus. Pure narrative immersion.
+6. Target length: 250-350 words.
+
+AFTER the narrative (on a new line), you MUST output a JSON block with action suggestions:
+
+```json
+{{
+  "action_suggestions": [
+    "Suggestion 1 - A specific action the player could take",
+    "Suggestion 2 - Another viable action",
+    "Suggestion 3 - A third option"
+  ]
+}}
+```
+
+Make suggestions concrete and action-oriented (e.g., "Talk to the stranger", "Search the desk", "Move toward the sound").
+"""
+
+        context_block = f"""Campaign: {narrative.title}
 Theme: {theme}
-Campaign Overview: {narrative.story_arc_summary}
+Hook: {narrative.tagline}
+Core: {narrative.story_arc_summary[:150]}
 
-Player Characters: {player_names}
-
-Opening Hook: {narrative.tagline}{location_description}
+Characters: {player_names}
+Setting: {location_description}
+{npc_context}
         """
 
         messages = [
             SystemMessage(content=system_prompt),
-            HumanMessage(content=f"Begin this campaign with an engaging opening narration:\n{context_block}")
+            HumanMessage(content=context_block)
         ]
 
         response = await self.model.ainvoke(messages)
-
-        return {"messages": [response]}
+        
+        # Extract narrative and suggestions
+        content = response.content
+        narrative_text, suggestions = self._extract_narrative_and_suggestions(content)
+        
+        return {
+            "messages": [AIMessage(content=narrative_text)],
+            "action_suggestions": suggestions
+        }
 
     async def narrate_outcome(self, state: GameState) -> Dict[str, Any]:
         """
         Phase 7b: The Narrator.
-        Synthesizes the mechanical outcome + director instructions into prose.
+        Synthesizes the mechanical outcome into vivid prose.
+        
+        IMPROVED: Returns both narrative and explicit action suggestions in JSON format.
         """
         outcome = state.get("last_outcome")
         directives = state.get("director_directives")
         action = state.get("current_action")
 
         if not outcome:
-            return {"messages": [AIMessage(content="The world waits for your action.")]}
+            return {
+                "messages": [AIMessage(content="The world waits for your action.")],
+                "action_suggestions": ["Look around", "Listen carefully", "Wait"]
+            }
 
-        # --- Fix: Get actor's location with safe None checking ---
+        # Get actor's location with safe None checking
         player_map = {p.id: p for p in state.get("players", [])}
         actor_location = "Unknown"
         if action and action.player_id in player_map:
@@ -104,40 +146,102 @@ Opening Hook: {narrative.tagline}{location_description}
                 location_obj = world.locations.get(actor_loc_id)
                 if location_obj and hasattr(location_obj, 'description'):
                     actor_location = location_obj.description
-        # --- End Fix ---
 
-        system_prompt = """You are the Dungeon Master.
-        Describe the results of the player's action vividly and immersively.
+        # Embed director guidance subtly
+        tone_hint = ""
+        if directives:
+            tone_hint = f"Tone/mood to weave in subtly: {directives.narrative_focus}"
 
-        Inputs to consider:
-        1. Mechanical Outcome: What actually happened (Success/Failure).
-        2. Director's Note: Tone and focus (e.g., "Make it scary").
-        3. World State: Use the location description and active NPCs.
+        system_prompt = f"""You are the Dungeon Master.
 
-        Format:
-        - Use bold for key items or sudden events.
-        - Use > blockquotes for NPC dialogue.
-        - Keep it under 200 words.
-        """
+Narrate the IMMEDIATE CONSEQUENCE of the player's action in visceral, immersive prose.
 
-        context_block = f"""
-        Player Action: {action.description if action else 'Unknown'}
-        Result: {outcome.narrative_result} (Success: {outcome.success})
+CRITICAL RULES:
+1. Show what happens as a direct result of their choice - make it FELT through sensory detail.
+2. {tone_hint} (Weave the mood into word choice and pacing, NOT as explicit statements)
+3. Use BOLD for sudden changes/revelations and > blockquotes for reactions or mysterious sounds.
+4. Status: {'SUCCESS - the action had its intended effect' if outcome.success else 'FAILURE - unexpected consequences unfold'}.
+5. Keep the momentum going. The next prompt should feel inevitable, not optional.
+6. ABSOLUTELY NO action menu format. Pure narrative continuation only.
+7. Target length: 150-250 words.
 
-        Director's Focus: {directives.narrative_focus if directives else 'Neutral'}
-        Director's Note: {directives.next_beat if directives else 'Continue story'}
+AFTER the narrative (on a new line), you MUST output a JSON block with action suggestions:
 
-        Current Location: {actor_location}
+```json
+{{
+  "action_suggestions": [
+    "Suggestion 1 - A specific action the player could take next",
+    "Suggestion 2 - Another viable action",
+    "Suggestion 3 - A third option"
+  ]
+}}
+```
+
+Make suggestions concrete and action-oriented (e.g., "Pursue the fleeing figure", "Examine the symbol", "Ask for help").
+Suggestions should flow naturally from the narrative and provide clear next steps.
+"""
+
+        context_block = f"""Action: {action.description if action else 'Unknown'}
+Outcome: {outcome.narrative_result}
+Location: {actor_location}
         """
 
         messages = [
             SystemMessage(content=system_prompt),
-            HumanMessage(content=f"Narrate this:\n{context_block}")
+            HumanMessage(content=context_block)
         ]
 
         response = await self.model.ainvoke(messages)
+        
+        # Extract narrative and suggestions
+        content = response.content
+        narrative_text, suggestions = self._extract_narrative_and_suggestions(content)
+        
+        return {
+            "messages": [AIMessage(content=narrative_text)],
+            "action_suggestions": suggestions
+        }
 
-        return {"messages": [response]}
+    def _extract_narrative_and_suggestions(self, content: str) -> tuple[str, list[str]]:
+        """
+        Extract narrative text and action suggestions from LLM response.
+        
+        Expected format:
+        [Narrative text...]
+        
+        ```json
+        {
+          "action_suggestions": ["Suggestion 1", "Suggestion 2", "Suggestion 3"]
+        }
+        ```
+        
+        Args:
+            content: Full response from LLM
+            
+        Returns:
+            Tuple of (narrative_text, suggestions_list)
+        """
+        default_suggestions = ["Look around", "Wait", "Ask for clarification"]
+        
+        try:
+            # Find JSON block
+            if "```json" in content:
+                start = content.find("```json") + len("```json")
+                end = content.find("```", start)
+                if end > start:
+                    json_str = content[start:end].strip()
+                    json_data = json.loads(json_str)
+                    suggestions = json_data.get("action_suggestions", default_suggestions)
+                    
+                    # Extract narrative (everything before JSON block)
+                    narrative = content[:content.find("```json")].strip()
+                    
+                    return narrative, suggestions
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"Failed to parse suggestions JSON: {e}")
+        
+        # Fallback: return full content as narrative with defaults
+        return content, default_suggestions
 
     async def plan_response(self, state: GameState) -> Dict[str, Any]:
         """
@@ -145,7 +249,7 @@ Opening Hook: {narrative.tagline}{location_description}
         Receives the player's input (action or question) and decides the next step.
         Sets a flag ('response_type') in the state to guide routing.
         """
-        # Get the latest message from the player (assuming it's the last one)
+        # Get the latest message from the player
         messages = state.get("messages", [])
         player_input = ""
         if messages:
@@ -153,9 +257,9 @@ Opening Hook: {narrative.tagline}{location_description}
             player_input = messages[-1].content
 
         # Determine if it's an action, a question, or an exit command
-        is_action = any(word in player_input.lower() for word in ["attack", "move", "cast", "use", "take", "open", "go"])
+        is_action = any(word in player_input.lower() for word in ["attack", "move", "cast", "use", "take", "open", "go", "examine", "investigate", "approach"])
         is_question = "?" in player_input or any(word in player_input.lower() for word in ["what", "where", "who", "why", "how", "tell me"])
-        is_exit = any(word in player_input.lower() for word in ["quit", "exit", "goodbye"])
+        is_exit = any(word in player_input.lower() for word in ["quit", "exit", "goodbye", "end"])
 
         # Set the response type in the state
         response_type = "unknown"

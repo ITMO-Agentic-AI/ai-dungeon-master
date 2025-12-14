@@ -130,7 +130,7 @@ class Player(BaseModel):
     race: str  # D&D Race (e.g., 'Human', 'Elf')
     background: str  # D&D Background (e.g., 'Acolyte', 'Outlander')
     level: int = 1
-    stats: DnDCharacterStats  # Use the new DnD stats
+    stats: DnDCharacterStats  # Use the new D&D stats
 
     # Narrative Hooks
     backstory: str = Field(description="Short history relative to the campaign setting")
@@ -293,3 +293,6 @@ class GameState(TypedDict):
     last_verdict: Optional[JudgeVerdict]
     response_type: str
     __end__: bool
+    
+    # NEW: DM returns explicit action suggestions
+    action_suggestions: List[str]  # e.g., ["Attack the goblin", "Search the chest", "Talk to the NPC"]
