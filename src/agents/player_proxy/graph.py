@@ -10,6 +10,9 @@ from langgraph.types import Send
 from langgraph.runtime import Runtime
 from pydantic import BaseModel, Field
 
+from src.services.logging_service import logger
+import asyncio
+
 from src.core.types import GameState, Player, DnDCharacterStats
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
@@ -117,6 +120,15 @@ class PlayerProxyAgent(BaseAgent):
 
         # NEW LOGIC: Check if it's an update request (e.g., triggered by orchestrator after Judge)
         outcome = state.get("last_outcome")
+
+        # Debug log
+        logger.log_event(
+            "PlayerProxy", 
+            "Debug", 
+            f"Routing Check. Players count: {len(players)}. Has Outcome: {bool(outcome)}. Outcome Data: {str(outcome)[:100]}", 
+            level="warning" # 用 warning 级别确保显眼
+        )
+
         if outcome:
             # If there's an outcome from an action affecting players, route to update
             return "update_players"
@@ -312,6 +324,51 @@ class PlayerProxyAgent(BaseAgent):
         new_message = {"type": "human", "name": p_name, "content": action_text}
 
         return {"messages": [new_message]}
+    
+    # New Method
+    async def run_initialization(self, state: GameState) -> Dict[str, Any]:
+        """
+        Directly run initialization logic, bypassing the internal graph router.
+        This fixes the RecursionError in Phase 1.
+        """
+        logger.log_event("PlayerProxy", "Init", "Forcing direct initialization (bypassing graph router)")
+        
+        # 1. 准备数据 (逻辑和 route_step 一样，但是不如果不做判断)
+        setting = state.get("setting")
+        narrative = state.get("narrative")
+        world = state.get("world")
+
+        concepts = ["Warrior", "Mage", "Rogue"]
+        if hasattr(setting, "player_concepts"):
+            concepts = setting.player_concepts
+        
+        story_hook = "A generic adventure"
+        if hasattr(narrative, "tagline"):
+            story_hook = narrative.tagline
+            
+        locations = {}
+        if hasattr(world, "locations"):
+            locations = world.locations
+
+        # 2. 手动并行执行 (不使用 LangGraph Send，而是使用 asyncio.gather)
+        # 这样更稳健，绝对不会死循环
+        tasks = []
+        for concept in concepts:
+            # 构造 payload
+            payload = {"concept": concept, "story_hook": story_hook, "locations": locations}
+            tasks.append(self.create_single_character(payload))
+        
+        # 3. 等待所有生成完成
+        results = await asyncio.gather(*tasks)
+        
+        # 4. 合并结果
+        all_players = []
+        for res in results:
+            if "players" in res:
+                all_players.extend(res["players"])
+                
+        logger.log_event("PlayerProxy", "Init", f"Generated {len(all_players)} players directly.")
+        return {"players": all_players}
 
     async def process(self, state: GameState, runtime: Runtime = None) -> dict[str, Any]:
         """Process method required by BaseAgent."""

@@ -90,7 +90,11 @@ class OrchestratorService:
             builder.add_node("story_architect", self.architect.plan_narrative)
             builder.add_node("lore_builder", self.lore_builder.build_lore)
             builder.add_node("world_engine", self.world_engine.instantiate_world)
-            builder.add_node("player_creator", self.player_proxy.process)
+            
+            # CRITICAL FIX: PlayerProxyAgent has process() method that handles parallel creation
+            # Its internal graph uses Send() to create characters in parallel
+            builder.add_node("player_creator", self.player_proxy.run_initialization)
+            
             builder.add_node("initial_dm", self.dm.narrate_initial)
             
             # NEW: Phase 1 exit node
@@ -210,10 +214,7 @@ class OrchestratorService:
             builder.add_edge("lore_builder", "world_engine")
             builder.add_edge("world_engine", "player_creator")
             builder.add_edge("player_creator", "initial_dm")
-            
-            # FIX: Phase 1 ends here, does NOT go to dm_planner
-            builder.add_edge("initial_dm", "phase1_complete")
-            builder.add_edge("phase1_complete", END)
+            builder.add_edge("initial_dm", END)
 
             # --- Phase 2: Single-Turn Gameplay ---
             builder.add_conditional_edges("dm_planner", route_dm_plan)
@@ -231,10 +232,8 @@ class OrchestratorService:
             builder.add_edge("lore_builder_question", "director")
             builder.add_edge("director", "dm_outcome")
 
-            # FIX: dm_outcome now goes to turn_complete, NOT back to dm_planner
-            # This ends the turn and exits the graph, allowing main.py to call execute_turn() again next iteration
-            builder.add_edge("dm_outcome", "turn_complete")
-            builder.add_edge("turn_complete", END)
+            # Return to next turn
+            builder.add_edge("dm_outcome", END)
 
             # Exit path
             builder.add_edge("exit_check", END)
@@ -273,6 +272,10 @@ class OrchestratorService:
         Raises:
             RuntimeError: If initialization fails
         """
+        # Force clean old map
+        self.workflow = None
+        self.compiled_graph = None
+
         if not self.compiled_graph:
             logger.debug("Graph not compiled. Building pipeline...")
             self.build_pipeline()
@@ -283,8 +286,18 @@ class OrchestratorService:
         logger.info(f"Starting world initialization (session: {session_id})")
         logger.info("Phase 1: Story Architect -> Lore Builder -> World Engine -> Player Creator (PARALLEL) -> Initial DM -> Complete")
 
+        # Add new part: Force cleanup state to prevent Phase 1 from reading dirty data and causing an infinite loop
+        # It must be ensured that players is empty and last_outcome is None
+        clean_state = state.copy()
+        clean_state["last_outcome"] = None
+        clean_state["players"] = []
+        # Ensure response_type is clean
+        clean_state["response_type"] = "unknown"
+
+
         try:
-            final_state = await self.compiled_graph.ainvoke(state, config=config)
+            # Using clean_state replace state
+            final_state = await self.compiled_graph.ainvoke(clean_state, config=config)
             logger.info("World initialization completed successfully")
             
             # Log what was created
