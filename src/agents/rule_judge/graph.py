@@ -149,12 +149,11 @@ class JudgeAgent(BaseAgent):
 
         if correction_needed and verdict.is_valid:
             verdict.is_valid = False
-            verdict.feedback += f" [API Discrepancy: {', '.join(correction_suggestions)}]"
+            api_discrepancy = f"[API Discrepancy: {', '.join(correction_suggestions)}]"
             verdict.correction_suggestion = (
-                ", ".join(correction_suggestions)
+                api_discrepancy
                 if not verdict.correction_suggestion
-                else verdict.correction_suggestion
-                + f" [API Suggestion: {', '.join(correction_suggestions)}]"
+                else f"{verdict.correction_suggestion} {api_discrepancy}"
             )
 
         return {"last_verdict": verdict}
