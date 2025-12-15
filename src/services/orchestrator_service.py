@@ -1,8 +1,10 @@
 from typing import Literal, Any
 import logging
+from pathlib import Path
 
 from langgraph.graph import StateGraph, END, START
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from src.core.types import GameState
 
@@ -48,7 +50,15 @@ class OrchestratorService:
         """Initialize orchestrator with all agent instances and memory."""
         self.workflow = None
         self.compiled_graph = None
-        self.memory = MemorySaver()
+
+        # Store database path for async initialization
+        self.db_path = Path("src/data/storage/sessions.db")
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # AsyncSqliteSaver context manager and checkpointer
+        self._checkpointer_cm = None  # Store context manager
+        self.memory = MemorySaver()  # Temporary default until async setup
+
         self._retry_count = 0
         self._max_retry_attempts = 2
 
@@ -66,7 +76,7 @@ class OrchestratorService:
 
         logger.info("OrchestratorService initialized with all agents")
 
-    def build_pipeline(self) -> None:
+    async def build_pipeline(self) -> None:
         """
         Constructs the Master Graph connecting all agents.
 
@@ -77,6 +87,12 @@ class OrchestratorService:
         Phase 2 now has explicit turn completion that returns to main.py,
         preventing infinite recursion within a single ainvoke() call.
         """
+        # Initialize AsyncSqliteSaver for persistent checkpoint storage
+        if self._checkpointer_cm is None:
+            self._checkpointer_cm = AsyncSqliteSaver.from_conn_string(str(self.db_path))
+            self.memory = await self._checkpointer_cm.__aenter__()
+            logger.info(f"AsyncSqliteSaver initialized with database: {self.db_path}")
+
         try:
             builder = StateGraph(GameState)
 
@@ -252,6 +268,18 @@ class OrchestratorService:
             logger.error(f"Failed to build pipeline: {e}", exc_info=True)
             raise RuntimeError(f"Graph building failed: {e}") from e
 
+    async def cleanup(self) -> None:
+        """Cleanup resources, especially the AsyncSqliteSaver connection."""
+        if self._checkpointer_cm is not None:
+            try:
+                await self._checkpointer_cm.__aexit__(None, None, None)
+                logger.info("AsyncSqliteSaver connection closed")
+            except Exception as e:
+                logger.warning(f"Error closing AsyncSqliteSaver: {e}")
+            finally:
+                self._checkpointer_cm = None
+                self.memory = MemorySaver()  # Fallback to in-memory
+
     async def initialize_world(self, state: GameState) -> GameState:
         """
         Phase 1: Initialize the world through the setup pipeline.
@@ -280,7 +308,7 @@ class OrchestratorService:
 
         if not self.compiled_graph:
             logger.debug("Graph not compiled. Building pipeline...")
-            self.build_pipeline()
+            await self.build_pipeline()
 
         session_id = state["metadata"].get("session_id", "default_session")
         config = {"configurable": {"thread_id": session_id}}
@@ -353,7 +381,7 @@ class OrchestratorService:
         """
         if not self.compiled_graph:
             logger.debug("Graph not compiled. Building pipeline...")
-            self.build_pipeline()
+            await self.build_pipeline()
 
         session_id = state["metadata"].get("session_id", "default_session")
         turn = state["metadata"].get("turn", 0)

@@ -19,6 +19,9 @@ langgraph = "^1.0.2"
 langchain-openai = "^1.0.1"
 langchain-anthropic = "^1.0.0"
 langchain-ollama = "^1.0.0"
+chainlit = "^2.9.3"
+aiosqlite = "0.21.0"
+langgraph-checkpoint-sqlite = "^2.0.0"
 
 [tool.poetry.group.dev.dependencies]
 langgraph-cli = {extras = ["inmem"], version = "^0.4.5"}

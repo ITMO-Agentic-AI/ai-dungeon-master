@@ -5,18 +5,18 @@ Provides fallback mechanisms when native structured output is not supported.
 
 import json
 import re
-from typing import type
+from typing import TypeVar, Type
 from pydantic import BaseModel
 from langchain_core.messages import BaseMessage
 from langchain_openai import ChatOpenAI
 
-T = type("T", bound=BaseModel)
+T = TypeVar("T", bound=BaseModel)
 
 
 async def get_structured_output(
     llm: ChatOpenAI,
     messages: list[BaseMessage],
-    output_model: type[T],
+    output_model: Type[T],
     max_retries: int = 3,
 ) -> T:
     """
@@ -99,7 +99,7 @@ Example format:
     raise ValueError(f"Failed to get structured output after {max_retries} attempts")
 
 
-def get_example_from_schema(model: type[BaseModel]) -> dict:
+def get_example_from_schema(model: Type[BaseModel]) -> dict:
     """Generate an example instance from a Pydantic model."""
     example = {}
     for field_name, field_info in model.model_fields.items():

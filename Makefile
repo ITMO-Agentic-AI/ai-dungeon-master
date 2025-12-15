@@ -5,7 +5,8 @@ help:
 	@echo "  make install              - Install dependencies with Poetry"
 	@echo "  make dev                  - Run development environment setup"
 	@echo "  make dev-langgraph-AGENT  - Run specific agent (e.g., dev-langgraph-story_architect)"
-	@echo "  make dev-game             - Run the full game orchestrator"
+	@echo "  make dev-game             - Run the full game orchestrator (terminal)"
+	@echo "  make dev-chainlit         - Run the Chainlit web interface"
 	@echo "  make test                 - Run tests"
 	@echo "  make format               - Format code with ruff"
 	@echo "  make lint                 - Lint code with ruff"
@@ -60,6 +61,10 @@ dev-langgraph-rule_judge:
 dev-game:
 	@echo "Starting full game orchestrator..."
 	poetry run python main.py
+
+dev-chainlit:
+	@echo "Starting Chainlit web interface..."
+	poetry run chainlit run chainlit_app.py -w
 
 test:
 	poetry run pytest tests/ -v

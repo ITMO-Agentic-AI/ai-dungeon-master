@@ -255,6 +255,12 @@ Location: {actor_location}
         Receives the player's input (action or question) and decides the next step.
         Sets a flag ('response_type') in the state to guide routing.
         """
+        # Check if response_type is already set (e.g., from Chainlit interface)
+        existing_response_type = state.get("response_type")
+        if existing_response_type and existing_response_type != "unknown":
+            # Response type already determined by caller, use it
+            return {"response_type": existing_response_type}
+        
         # Get the latest message from the player
         messages = state.get("messages", [])
         player_input = ""

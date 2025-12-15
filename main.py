@@ -3,6 +3,7 @@ import sys
 
 # import logging
 from src.services.logging_service import logger
+from src.services.session_service import session_service
 from datetime import datetime
 
 from src.core.types import (
@@ -125,6 +126,91 @@ async def initialize_game_state() -> GameState:
 
     logger.log_event("System", "Debug", f"GameState initialized: {session_id}", level="debug")
     return state
+
+
+async def load_session(session_id: str) -> GameState:
+    """
+    Load a saved game session from checkpoint.
+
+    Args:
+        session_id: Session ID to load
+
+    Returns:
+        GameState: Loaded game state
+
+    Raises:
+        ValueError: If session not found
+    """
+    logger.log_event("System", "Load", f"Loading session: {session_id}")
+
+    config = {"configurable": {"thread_id": session_id}}
+
+    # Get the latest checkpoint for this session
+    snapshot = await orchestrator_service.compiled_graph.aget_state(config)
+
+    if not snapshot or not snapshot.values:
+        raise ValueError(f"Session '{session_id}' not found or has no saved state")
+
+    logger.log_event("System", "Load", f"Loaded session {session_id} at turn {snapshot.values.get('metadata', {}).get('turn', 0)}")
+    return snapshot.values
+
+
+async def select_or_create_session() -> tuple[GameState, bool]:
+    """
+    Display session selection menu and return chosen session.
+
+    Returns:
+        tuple: (GameState, is_new_session)
+    """
+    print("\n" + "=" * 60)
+    print("🎲 AI DUNGEON MASTER - SESSION MANAGER 🎲")
+    print("=" * 60)
+
+    # List existing sessions
+    sessions = session_service.list_sessions(status_filter="active")
+
+    if sessions:
+        print("\n📚 Saved Sessions:")
+        print()
+        for i, session in enumerate(sessions[:10], 1):  # Show max 10
+            created = session.created_at[:10]  # Just the date
+            last_played = session.last_played[:10]
+            print(f"  {i}. {session.title}")
+            print(f"     Turn {session.turn_count} | Created: {created} | Last: {last_played}")
+            print(f"     ID: {session.session_id}")
+            print()
+
+        print("  N. Start New Game")
+        print("  Q. Quit")
+        print()
+        choice = input("Select option (1-{}, N, Q): ".format(len(sessions[:10]))).strip().upper()
+
+        if choice == "Q":
+            print("\n👋 Goodbye!")
+            sys.exit(0)
+        elif choice == "N":
+            # Create new session
+            return await initialize_game_state(), True
+        else:
+            # Try to load selected session
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(sessions[:10]):
+                    selected = sessions[idx]
+                    state = await load_session(selected.session_id)
+                    return state, False
+                else:
+                    print("❌ Invalid selection. Starting new game.")
+                    return await initialize_game_state(), True
+            except (ValueError, Exception) as e:
+                logger.log_event("System", "Error", f"Failed to load session: {e}", level="error")
+                print(f"❌ Failed to load session: {e}")
+                print("Starting new game instead...")
+                return await initialize_game_state(), True
+    else:
+        print("\n📝 No saved sessions found.")
+        print("\nStarting new game...")
+        return await initialize_game_state(), True
 
 
 def validate_game_state(state: GameState) -> bool:
@@ -328,97 +414,127 @@ async def run_game_loop() -> None:
     print(f"Temperature: {settings.model_temperature}")
     print("=" * 60)
 
-    # Step 1: Initialize fresh game state
-    print("=" * 60)
-    logger.log_event("System", "Start", "STARTING NEW GAME")
-    print("=" * 60)
+    # Step 1: Select or load session
+    state, is_new_session = await select_or_create_session()
 
-    state = await initialize_game_state()
+    if not is_new_session:
+        # Loaded existing session
+        print("\n" + "=" * 60)
+        print("📂 SESSION LOADED")
+        print("=" * 60)
+        
+        narrative = state.get("narrative")
+        if narrative:
+            print(f"\n📖 Campaign: {narrative.title}")
+        
+        turn = state.get("metadata", {}).get("turn", 0)
+        print(f"🔄 Resuming at turn {turn}")
+        
+        # Skip world initialization - go straight to gameplay
+        print("\n" + "=" * 60)
+        print("🏰 ADVENTURE CONTINUES 🏰")
+        print("=" * 60)
+        print("\n(Type 'quit', 'exit', 'end', or 'q' to quit)\n")
+        
+        # Jump to game loop
+        turn = state.get("metadata", {}).get("turn", 0)
+    else:
+        # New session - run full initialization
+        print("=" * 60)
+        logger.log_event("System", "Start", "STARTING NEW GAME")
+        print("=" * 60)
 
-    # Validate state
-    if not validate_game_state(state):
-        logger.log_event("System", "Error", "Initial GameState validation failed", level="error")
-        print("\n❌ Failed to initialize game (invalid state)")
-        sys.exit(1)
+        # Validate state
+        if not validate_game_state(state):
+            logger.log_event("System", "Error", "Initial GameState validation failed", level="error")
+            print("\n❌ Failed to initialize game (invalid state)")
+            sys.exit(1)
 
-    # Step 2: Run Phase 1 (World Initialization)
-    print("\n🎲 Initializing game world...")
-    print("This may take a moment as the AI creates your adventure...\n")
+        # Step 2: Run Phase 1 (World Initialization)
+        print("\n🎲 Initializing game world...")
+        print("This may take a moment as the AI creates your adventure...\n")
 
-    logger.log_event("System", "Phase 1", "Starting World Initialization")
+        logger.log_event("System", "Phase 1", "Starting World Initialization")
 
-    try:
-        state = await orchestrator_service.initialize_world(state)
+        try:
+            state = await orchestrator_service.initialize_world(state)
 
-        world = state.get("world")  # new add
-        if world:
+            world = state.get("world")  # new add
+            if world:
+                logger.log_event(
+                    "World",
+                    "Created",
+                    f"World '{state['narrative'].title}' created with {len(world.regions)} regions.",
+                )
+
+        except Exception as e:
+            logger.log_event("System", "Error", f"Phase 1 Failed: {e}", level="error")
+            print(f"\n❌ Failed to initialize world: {e}")
+            sys.exit(1)
+
+        # Save new session metadata
+        session_id = state["metadata"]["session_id"]
+        session_title = state.get("narrative", {}).title or "Untitled Campaign"
+        session_service.create_session(session_id, session_title)
+        logger.log_event("System", "Session", f"Created session: {session_id}")
+
+        # Display initialized world
+        print("\n✅ World Created!")
+        narrative = state.get("narrative")
+        if narrative:
+            print(f"\n📖 Campaign: {narrative.title}")
+            print(f"📝 {narrative.tagline}")
+
+        players = state.get("players", [])
+        if players:
+            print("\n👥 Your Characters:")
+            seen_ids = set()
+            for player in players:
+                pid = getattr(player, "id", None)
+                if pid is not None and pid in seen_ids:
+                    continue
+                if pid is not None:
+                    seen_ids.add(pid)
+
+                print(f"  • {player.name} - {player.race} {player.class_name}")
+                print(f"    {player.motivation}")
+        else:
             logger.log_event(
-                "World",
-                "Created",
-                f"World '{state['narrative'].title}' created with {len(world.regions)} regions.",
+                "System",
+                "Warning",
+                "No players were created during world initialization",
+                level="warning",
             )
 
-    except Exception as e:
-        logger.log_event("System", "Error", f"Phase 1 Failed: {e}", level="error")
-        print(f"\n❌ Failed to initialize world: {e}")
-        sys.exit(1)
+        # ✅ Show initial DM narration produced during Phase 1
+        messages = state.get("messages", [])
+        if messages:
+            print("\n" + "=" * 60)
+            print("📜 DUNGEON MASTER")
+            print("=" * 60)
+            for msg in messages:
+                content = getattr(msg, "content", str(msg))
+                print(f"\n{content}")
+        else:
+            logger.log_event(
+                "System",
+                "Warning",
+                "No DM messages generated during world initialization",
+                level="warning",
+            )
 
-    # Display initialized world
-    print("\n✅ World Created!")
-    narrative = state.get("narrative")
-    if narrative:
-        print(f"\n📖 Campaign: {narrative.title}")
-        print(f"📝 {narrative.tagline}")
-
-    players = state.get("players", [])
-    if players:
-        print("\n👥 Your Characters:")
-        seen_ids = set()
-        for player in players:
-            pid = getattr(player, "id", None)
-            if pid is not None and pid in seen_ids:
-                continue
-            if pid is not None:
-                seen_ids.add(pid)
-
-            print(f"  • {player.name} - {player.race} {player.class_name}")
-            print(f"    {player.motivation}")
-    else:
-        logger.log_event(
-            "System",
-            "Warning",
-            "No players were created during world initialization",
-            level="warning",
-        )
-
-    # ✅ Show initial DM narration produced during Phase 1
-    messages = state.get("messages", [])
-    if messages:
         print("\n" + "=" * 60)
-        print("📜 DUNGEON MASTER")
+        print("🏰 ADVENTURE BEGINS 🏰")
         print("=" * 60)
-        for msg in messages:
-            content = getattr(msg, "content", str(msg))
-            print(f"\n{content}")
-    else:
-        logger.log_event(
-            "System",
-            "Warning",
-            "No DM messages generated during world initialization",
-            level="warning",
-        )
+        print("\n(Type 'quit', 'exit', 'end', or 'q' to quit)\n")
 
-    print("\n" + "=" * 60)
-    print("🏰 ADVENTURE BEGINS 🏰")
-    print("=" * 60)
-    print("\n(Type 'quit', 'exit', 'end', or 'q' to quit)\n")
-
-    logger.log_event("System", "Phase 2", "Starting Gameplay Loop")
+        logger.log_event("System", "Phase 2", "Starting Gameplay Loop")
+        turn = 0
 
     # Step 3: Main game loop
     try:
-        turn = 0
         max_turns = 1000  # Safety limit
+        session_id = state["metadata"]["session_id"]
 
         while turn < max_turns and not state.get("__end__", False):
             turn += 1
@@ -447,8 +563,13 @@ async def run_game_loop() -> None:
                 break
 
             # Set state for orchestrator routing
+            # CRITICAL: Always reset response_type to ensure proper routing
             state["current_action"] = action
             state["response_type"] = "action"  # This must be set for routing!
+            
+            # Clear previous turn data to prevent stale routing
+            state["last_outcome"] = None
+            state["last_verdict"] = None
 
             print("\n⚙️  Resolving action...")
             logger.log_event(
@@ -458,6 +579,10 @@ async def run_game_loop() -> None:
             # Execute turn through orchestrator
             try:
                 state = await orchestrator_service.execute_turn(state)
+                
+                # Save session metadata after successful turn
+                session_service.update_session(session_id, turn)
+                logger.log_event("System", "Debug", f"Saved session metadata for turn {turn}", level="debug")
             except Exception as e:
                 logger.log_event(
                     "System", "Error", f"Turn {turn} execution failed: {e}", level="error"
