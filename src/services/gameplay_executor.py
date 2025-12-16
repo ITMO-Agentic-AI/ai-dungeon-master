@@ -81,27 +81,27 @@ class GameplayExecutor:
     async def execute_turn(
         self,
         game_state: GameState,
-        action_resolver: Any,  # ActionResolverAgent
-        judge: Any,  # JudgeAgent
-        world_engine: Any,  # WorldEngineAgent
-        lore_builder: Any,  # LoreBuilder
-        dm: Any,  # DungeonMasterAgent
-        director: Any  # DirectorAgent
+        action_resolver: Any = None,  # ActionResolverAgent
+        judge: Any = None,  # JudgeAgent
+        world_engine: Any = None,  # WorldEngineAgent
+        lore_builder: Any = None,  # LoreBuilder
+        dm: Any = None,  # DungeonMasterAgent
+        director: Any = None  # DirectorAgent
     ) -> tuple[GameState, GameplayPhaseState]:
         """
         Execute one complete turn of the gameplay loop (all 7 steps).
         
         Args:
             game_state: Current GameState
-            action_resolver: Agent for mechanical resolution
-            judge: Agent for rule validation
-            world_engine: Agent for world updates
-            lore_builder: Agent for lore consistency
-            dm: Agent for narration
-            director: Agent for pacing/tone
+            action_resolver: Agent for mechanical resolution (optional for testing)
+            judge: Agent for rule validation (optional for testing)
+            world_engine: Agent for world updates (optional for testing)
+            lore_builder: Agent for lore consistency (optional for testing)
+            dm: Agent for narration (optional for testing)
+            director: Agent for pacing/tone (optional for testing)
             
         Returns:
-            Updated (GameState, GameplayPhaseState)
+            Tuple of (updated GameState dict, updated GameplayPhaseState)
         """
         if not self.gameplay_state:
             raise RuntimeError("Gameplay phase not initialized. Call initialize_gameplay_phase first.")
@@ -112,14 +112,14 @@ class GameplayExecutor:
         # ============================================================
         # STEP 1: Player Action Generation
         # ============================================================
-        logger.info("📍 Step 1: Player Action Generation")
+        logger.info("\ud83d� Step 1: Player Action Generation")
         player_actions = await self._step1_generate_actions(game_state)
         self.gameplay_state.player_actions = player_actions
 
         # ============================================================
         # STEP 2: Action Validation & Rule Adjudication
         # ============================================================
-        logger.info("📍 Step 2: Action Validation & Rule Adjudication")
+        logger.info("\ud83d� Step 2: Action Validation & Rule Adjudication")
         outcome_tokens = await self._step2_validate_actions(
             game_state,
             player_actions,
@@ -131,7 +131,7 @@ class GameplayExecutor:
         # ============================================================
         # STEP 3: Environment & Lore Update
         # ============================================================
-        logger.info("📍 Step 3: Environment & Lore Update")
+        logger.info("\ud83d� Step 3: Environment & Lore Update")
         state_changes = await self._step3_update_world(
             game_state,
             outcome_tokens,
@@ -143,7 +143,7 @@ class GameplayExecutor:
         # ============================================================
         # STEP 4: Narrative Description & Dialogue
         # ============================================================
-        logger.info("📍 Step 4: Narrative Description & Dialogue")
+        logger.info("\ud83d� Step 4: Narrative Description & Dialogue")
         narration_result = await self._step4_narrate_outcome(
             game_state,
             outcome_tokens,
@@ -154,7 +154,7 @@ class GameplayExecutor:
         # ============================================================
         # STEP 5: Director Oversight & Pacing
         # ============================================================
-        logger.info("📍 Step 5: Director Oversight & Pacing")
+        logger.info("\ud83d� Step 5: Director Oversight & Pacing")
         pacing_result, directives = await self._step5_director_oversight(
             game_state,
             self.gameplay_state.pacing,
@@ -166,7 +166,7 @@ class GameplayExecutor:
         # ============================================================
         # STEP 6: Event Recording & Memory Sync
         # ============================================================
-        logger.info("📍 Step 6: Event Recording & Memory Sync")
+        logger.info("\ud83d� Step 6: Event Recording & Memory Sync")
         event_nodes = await self._step6_record_events(
             outcome_tokens,
             state_changes,
@@ -176,7 +176,7 @@ class GameplayExecutor:
         # ============================================================
         # STEP 7: Loop Iteration & Scene Transition
         # ============================================================
-        logger.info("📍 Step 7: Loop Iteration & Scene Transition")
+        logger.info("\ud83d� Step 7: Loop Iteration & Scene Transition")
         scene_transition = await self._step7_check_scene_transition(
             game_state,
             self.gameplay_state.pacing,
@@ -193,6 +193,9 @@ class GameplayExecutor:
         game_state["metadata"]["last_turn_timestamp"] = datetime.utcnow().isoformat()
 
         logger.info(f"✅ Turn {self.gameplay_state.turn_number} complete")
+        
+        # CRITICAL: Return tuple of (GameState dict, GameplayPhaseState)
+        # NOT a tuple where first element tries to use .get()
         return game_state, self.gameplay_state
 
     async def _step1_generate_actions(self, game_state: GameState) -> list[dict]:
@@ -336,16 +339,24 @@ class GameplayExecutor:
             "scene": game_state.get("current_scene", "unknown")
         }
 
-        # DM narrates (already has narrate_outcome method)
-        dm_response = await dm.narrate_outcome(game_state)
-
-        # Extract or construct ActionOutcome
-        outcome = ActionOutcome(
-            success=all(t.meets_dc for t in outcome_tokens),
-            narrative_result=dm_response["messages"][0].content if dm_response.get("messages") else "The action unfolds...",
-            stat_changes=[],
-            new_location_id=None
-        )
+        # Mock narration if DM not provided
+        if dm is None:
+            outcome = ActionOutcome(
+                success=all(t.meets_dc for t in outcome_tokens),
+                narrative_result="The action unfolds before you...",
+                stat_changes=[],
+                new_location_id=None
+            )
+        else:
+            # DM narrates (already has narrate_outcome method)
+            dm_response = await dm.narrate_outcome(game_state)
+            # Extract or construct ActionOutcome
+            outcome = ActionOutcome(
+                success=all(t.meets_dc for t in outcome_tokens),
+                narrative_result=dm_response["messages"][0].content if dm_response.get("messages") else "The action unfolds...",
+                stat_changes=[],
+                new_location_id=None
+            )
 
         logger.info(f"📖 DM narrated turn outcome ({len(outcome.narrative_result)} chars)")
         return outcome
@@ -363,8 +374,16 @@ class GameplayExecutor:
         """
         pacing.turns_in_current_scene += 1
 
-        # Director provides guidance
-        directives = await director.direct_scene(game_state)
+        # Mock directives if director not provided
+        if director is None:
+            directives = {
+                "narrative_focus": "Continue current scene",
+                "tension_adjustment": 0.0,
+                "next_beat": "ongoing"
+            }
+        else:
+            # Director provides guidance
+            directives = await director.direct_scene(game_state)
 
         # Update tension based on director feedback
         tension_adjustment = directives.get("tension_adjustment", 0)
@@ -437,7 +456,7 @@ class GameplayExecutor:
             pacing.turns_in_current_scene = 0
             logger.info("🔄 Scene transition triggered")
         else:
-            logger.info("⏯️  Scene continues...")
+            logger.info("\u23ef\ufe0f  Scene continues...")
 
         return trigger
 
