@@ -74,6 +74,7 @@ class ModelService:
                 temperature=temperature,
                 api_key=self.settings.custom_model_api_key,
                 base_url=self.settings.custom_model_base_url,
+                reasoning=False,
             )
         else:
             # Use Ollama (local model)
@@ -86,6 +87,7 @@ class ModelService:
             return ChatOllama(
                 model=model_to_use,
                 temperature=temperature,
+                reasoning=False,
             )
 
 

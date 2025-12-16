@@ -1,270 +1,307 @@
 /* Medieval Fantasy D&D Theme - Clean, No Emojis */
 
 /* Import medieval fonts */
-@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=EB+Garamond:ital,wght@0,400;0,600;1,400&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=EB+Garamond:ital,wght@0,400;0,600;1,400&display=swap");
 
 /* Color palette: Dark parchment with gold accents */
 :root {
-    --background: 28 25% 12%;           /* Dark parchment background */
-    --foreground: 40 20% 92%;           /* Cream text */
-    --primary: 25 50% 35%;              /* Deep brown */
-    --primary-foreground: 40 30% 90%;   /* Light text on primary */
-    --accent: 40 65% 55%;               /* Gold accent */
-    --accent-foreground: 28 25% 12%;    /* Dark text on accent */
-    --border: 30 20% 25%;               /* Border color */
-    --card: 30 22% 16%;                 /* Card background */
-    --muted: 30 15% 35%;                /* Muted elements */
-    --muted-foreground: 40 15% 65%;     /* Muted text */
+  --background: 28 25% 12%; /* Dark parchment background */
+  --foreground: 40 20% 92%; /* Cream text */
+  --primary: 25 50% 35%; /* Deep brown */
+  --primary-foreground: 40 30% 90%; /* Light text on primary */
+  --accent: 40 65% 55%; /* Gold accent */
+  --accent-foreground: 28 25% 12%; /* Dark text on accent */
+  --border: 30 20% 25%; /* Border color */
+  --card: 30 22% 16%; /* Card background */
+  --muted: 30 15% 35%; /* Muted elements */
+  --muted-foreground: 40 15% 65%; /* Muted text */
 }
 
 /* Typography */
 body {
-    font-family: 'EB Garamond', serif;
-    font-size: 16px;
-    line-height: 1.7;
-    letter-spacing: 0.3px;
+  font-family: "EB Garamond", serif;
+  font-size: 16px;
+  line-height: 1.7;
+  letter-spacing: 0.3px;
 }
 
-h1, h2, h3, h4, h5, h6 {
-    font-family: 'Cinzel', serif;
-    font-weight: 600;
-    color: white;
-    letter-spacing: 1px;
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: "Cinzel", serif;
+  font-weight: 600;
+  color: white;
+  letter-spacing: 1px;
+}
+
+.card-container {
+  bottom: 10px;
 }
 
 /* Message containers - parchment style */
 .message-container {
-    background: linear-gradient(145deg, rgba(50, 40, 30, 0.4), rgba(40, 30, 20, 0.3));
-    border-left: 3px solid hsl(var(--accent));
-    padding: 1.5rem;
-    margin: 1rem 0;
-    border-radius: 8px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  background: linear-gradient(
+    145deg,
+    rgba(50, 40, 30, 0.4),
+    rgba(40, 30, 20, 0.3)
+  );
+  border-left: 3px solid hsl(var(--accent));
+  padding: 1.5rem;
+  margin: 1rem 0;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
 .message-container:hover {
-    box-shadow: 0 4px 12px rgba(212, 175, 55, 0.2);
+  box-shadow: 0 4px 12px rgba(212, 175, 55, 0.2);
 }
 
 /* System messages - subtle styling */
 .system-message .message-container {
-    border-left-color: hsl(var(--muted));
-    font-style: italic;
-    opacity: 0.9;
+  border-left-color: hsl(var(--muted));
+  font-style: italic;
+  opacity: 0.9;
 }
 
 /* DM messages - emphasize */
 .message-container[data-author="Dungeon Master"] {
-    border-left-width: 4px;
-    border-left-color: hsl(var(--accent));
+  border-left-width: 4px;
+  border-left-color: hsl(var(--accent));
 }
 
 /* Action buttons - medieval style */
-button, .action-button, [role="button"] {
-    background: linear-gradient(145deg, #6d4c41, #5d4037);
-    border: 2px solid hsl(var(--accent));
-    color: hsl(var(--foreground));
-    font-family: 'Cinzel', serif;
-    font-weight: 600;
-    padding: 0.75rem 1.5rem;
-    border-radius: 6px;
-    transition: all 0.3s ease;
-    text-transform: uppercase;
-    letter-spacing: 1.5px;
-    cursor: pointer;
+button,
+.action-button,
+[role="button"] {
+  background: linear-gradient(145deg, #6d4c41, #5d4037);
+  border: 2px solid hsl(var(--accent));
+  color: hsl(var(--foreground));
+  font-family: "Cinzel", serif;
+  font-weight: 600;
+  padding: 0.75rem 1.5rem;
+  border-radius: 6px;
+  transition: all 0.3s ease;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  cursor: pointer;
 }
 
-button:hover, .action-button:hover {
-    background: linear-gradient(145deg, #8d6e63, #6d4c41);
-    box-shadow: 0 4px 12px rgba(212, 175, 55, 0.4);
-    transform: translateY(-2px);
-    border-color: hsl(var(--accent));
+button:hover,
+.action-button:hover {
+  background: linear-gradient(145deg, #8d6e63, #6d4c41);
+  box-shadow: 0 4px 12px rgba(212, 175, 55, 0.4);
+  transform: translateY(-2px);
+  border-color: hsl(var(--accent));
 }
 
-button:active, .action-button:active {
-    transform: translateY(0);
-    box-shadow: 0 2px 6px rgba(212, 175, 55, 0.3);
+button:active,
+.action-button:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 6px rgba(212, 175, 55, 0.3);
 }
 
 /* Input fields - parchment style */
-input, textarea {
-    background: rgba(50, 40, 30, 0.5);
-    border: 2px solid hsl(var(--border));
-    color: hsl(var(--foreground));
-    border-radius: 6px;
-    padding: 0.75rem;
-    font-family: 'EB Garamond', serif;
-    font-size: 16px;
+input,
+textarea {
+  background: rgba(50, 40, 30, 0.5);
+  border: 2px solid hsl(var(--border));
+  color: hsl(var(--foreground));
+  border-radius: 6px;
+  padding: 0.75rem;
+  font-family: "EB Garamond", serif;
+  font-size: 16px;
 }
 
-input:focus, textarea:focus {
-    border-color: hsl(var(--accent));
-    outline: none;
-    box-shadow: 0 0 0 3px rgba(212, 175, 55, 0.2);
+input:focus,
+textarea:focus {
+  border-color: hsl(var(--accent));
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(212, 175, 55, 0.2);
 }
 
 /* Cards - enhanced parchment */
-.card, [role="region"] {
-    background: linear-gradient(145deg, rgba(50, 40, 30, 0.6), rgba(40, 30, 20, 0.5));
-    border: 1px solid hsl(var(--border));
-    border-radius: 8px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+.card,
+[role="region"] {
+  background: linear-gradient(
+    145deg,
+    rgba(50, 40, 30, 0.6),
+    rgba(40, 30, 20, 0.5)
+  );
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 /* Custom scrollbar - medieval theme */
 ::-webkit-scrollbar {
-    width: 14px;
-    height: 14px;
+  width: 14px;
+  height: 14px;
 }
 
 ::-webkit-scrollbar-track {
-    background: hsl(var(--background));
-    border-radius: 8px;
+  background: hsl(var(--background));
+  border-radius: 8px;
 }
 
 ::-webkit-scrollbar-thumb {
-    background: linear-gradient(180deg, hsl(var(--accent)), hsl(var(--primary)));
-    border-radius: 8px;
-    border: 2px solid hsl(var(--background));
+  background: linear-gradient(180deg, hsl(var(--accent)), hsl(var(--primary)));
+  border-radius: 8px;
+  border: 2px solid hsl(var(--background));
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: linear-gradient(180deg, hsl(var(--accent)), hsl(var(--accent)));
+  background: linear-gradient(180deg, hsl(var(--accent)), hsl(var(--accent)));
 }
 
 /* Links - gold accent */
 a {
-    color: hsl(var(--accent));
-    text-decoration: none;
-    transition: color 0.2s ease;
+  color: hsl(var(--accent));
+  text-decoration: none;
+  transition: color 0.2s ease;
 }
 
 a:hover {
-    color: hsl(40 80% 65%);
-    text-decoration: underline;
+  color: hsl(40 80% 65%);
+  text-decoration: underline;
 }
 
 /* Code blocks - darker parchment */
-pre, code {
-    background: rgba(20, 15, 10, 0.7);
-    border: 1px solid hsl(var(--border));
-    border-radius: 4px;
-    font-family: 'Courier New', monospace;
+pre,
+code {
+  background: rgba(20, 15, 10, 0.7);
+  border: 1px solid hsl(var(--border));
+  border-radius: 4px;
+  font-family: "Courier New", monospace;
 }
 
 pre {
-    padding: 1rem;
-    overflow-x: auto;
+  padding: 1rem;
+  overflow-x: auto;
 }
 
 code {
-    padding: 0.2rem 0.4rem;
+  padding: 0.2rem 0.4rem;
 }
 
 /* Loading spinner - gold */
-.spinner, [role="status"] {
-    color: hsl(var(--accent));
+.spinner,
+[role="status"] {
+  color: hsl(var(--accent));
 }
 
 /* Badges - medieval style */
 .badge {
-    background: hsl(var(--accent));
-    color: hsl(var(--accent-foreground));
-    font-family: 'Cinzel', serif;
-    font-weight: 600;
-    font-size: 0.75rem;
-    padding: 0.25rem 0.5rem;
-    border-radius: 4px;
-    text-transform: uppercase;
-    letter-spacing: 1px;
+  background: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
+  font-family: "Cinzel", serif;
+  font-weight: 600;
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
 }
 
 /* Dividers - subtle */
 hr {
-    border: none;
-    border-top: 2px solid hsl(var(--border));
-    margin: 2rem 0;
-    opacity: 0.5;
+  border: none;
+  border-top: 2px solid hsl(var(--border));
+  margin: 2rem 0;
+  opacity: 0.5;
 }
 
 /* Avatar images - bordered */
-img[alt*="avatar"], .avatar {
-    border: 2px solid hsl(var(--accent));
-    border-radius: 50%;
+img[alt*="avatar"],
+.avatar {
+  border: 2px solid hsl(var(--accent));
+  border-radius: 50%;
 }
 
 /* Progress bars */
-progress, [role="progressbar"] {
-    background: rgba(50, 40, 30, 0.5);
-    border: 1px solid hsl(var(--border));
-    border-radius: 4px;
+progress,
+[role="progressbar"] {
+  background: rgba(50, 40, 30, 0.5);
+  border: 1px solid hsl(var(--border));
+  border-radius: 4px;
 }
 
 progress::-webkit-progress-bar {
-    background: rgba(50, 40, 30, 0.5);
-    border-radius: 4px;
+  background: rgba(50, 40, 30, 0.5);
+  border-radius: 4px;
 }
 
 progress::-webkit-progress-value {
-    background: linear-gradient(90deg, hsl(var(--accent)), hsl(40 80% 65%));
-    border-radius: 4px;
+  background: linear-gradient(90deg, hsl(var(--accent)), hsl(40 80% 65%));
+  border-radius: 4px;
 }
 
 /* Tooltip styling */
 [role="tooltip"] {
-    background: rgba(20, 15, 10, 0.95);
-    border: 1px solid hsl(var(--accent));
-    color: hsl(var(--foreground));
-    font-family: 'EB Garamond', serif;
-    padding: 0.5rem 0.75rem;
-    border-radius: 4px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  background: rgba(20, 15, 10, 0.95);
+  border: 1px solid hsl(var(--accent));
+  color: hsl(var(--foreground));
+  font-family: "EB Garamond", serif;
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
 }
 
 /* Hide emojis if accidentally included */
 .emoji {
-    display: none;
+  display: none;
 }
 
 /* Responsive adjustments */
 @media (max-width: 768px) {
-    body {
-        font-size: 14px;
-    }
-    
-    .message-container {
-        padding: 1rem;
-    }
-    
-    button, .action-button {
-        padding: 0.5rem 1rem;
-        font-size: 0.875rem;
-    }
+  body {
+    font-size: 14px;
+  }
+
+  .message-container {
+    padding: 1rem;
+  }
+
+  button,
+  .action-button {
+    padding: 0.5rem 1rem;
+    font-size: 0.875rem;
+  }
 }
 
 /* Animation for dice rolls or actions */
 @keyframes shake {
-    0%, 100% { transform: translateX(0); }
-    25% { transform: translateX(-4px) rotate(-2deg); }
-    75% { transform: translateX(4px) rotate(2deg); }
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-4px) rotate(-2deg);
+  }
+  75% {
+    transform: translateX(4px) rotate(2deg);
+  }
 }
 
-.dice-roll, .action-animation {
-    animation: shake 0.5s ease-in-out;
+.dice-roll,
+.action-animation {
+  animation: shake 0.5s ease-in-out;
 }
 
 /* Fade-in animation for messages */
 @keyframes fadeIn {
-    from {
-        opacity: 0;
-        transform: translateY(10px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .message-container {
-    animation: fadeIn 0.3s ease-out;
+  animation: fadeIn 0.3s ease-out;
 }
