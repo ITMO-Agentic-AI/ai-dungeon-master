@@ -21,6 +21,7 @@ from src.agents.dungeon_master.graph import DungeonMasterAgent
 # Import collaboration services
 from src.services.agent_context_hub import AgentContextHub
 from src.services.knowledge_graph_service import KnowledgeGraphService
+from src.services.gameplay_executor import GameplayExecutor
 from src.core.agent_specialization import SpecializationContext
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,11 @@ class OrchestratorService:
     - DirectorAgent.direct_scene() -> narrative pacing
     - DungeonMasterAgent.narrate_outcome() -> narrate results
     - turn_complete -> END (exits single turn)
+    
+    Phase 3: Gameplay Executor (comprehensive turn orchestration)
+    - Uses GameplayExecutor to coordinate all 7 steps of the turn
+    - Handles player actions, resolution, world updates, narration, etc.
+    - Returns complete GameplayPhaseState with memory and pacing
     """
 
     def __init__(self):
@@ -86,6 +92,9 @@ class OrchestratorService:
         # Initialize collaboration services (NOT IN GameState - managed here)
         self.context_hub = AgentContextHub()
         self.knowledge_graph = KnowledgeGraphService()
+        
+        # Initialize Phase 3 executor
+        self.gameplay_executor = GameplayExecutor()
 
         logger.info("OrchestratorService initialized with all agents and collaboration services")
 
@@ -360,6 +369,15 @@ class OrchestratorService:
                 f"{kg_report['total_relations']} relations, "
                 f"consistency={kg_report['consistency_score']:.0%}"
             )
+            
+            # Initialize Phase 3 gameplay executor
+            campaign_id = state["metadata"].get("campaign_id", "campaign_001")
+            self.gameplay_executor.initialize_gameplay_phase(
+                final_state,
+                campaign_id,
+                session_id
+            )
+            logger.info("Phase 3 Gameplay Executor initialized")
 
             return final_state
 
@@ -369,26 +387,25 @@ class OrchestratorService:
 
     async def execute_turn(
         self, state: GameState, config: dict[str, Any] | None = None
-    ) -> GameState:
+    ) -> tuple[GameState, Any]:
         """
-        Phase 2: Execute a single game turn in the main gameplay loop.
+        Phase 2/3: Execute a single game turn using comprehensive gameplay loop.
 
-        This is called AFTER Phase 1 completes.
-        It starts at dm_planner and runs ONE COMPLETE TURN, then exits.
-        Main.py calls this once per player action.
-
-        Flow (single turn):
-        1. DM Planner decides: action, question, or exit
-        2a. If action: resolve -> judge -> world update -> director -> narration -> END
-        2b. If question: lore builder -> director -> narration -> END
-        3. Return to main.py for next player input
+        This executes all 7 steps of the gameplay loop:
+        1. Player Action Generation
+        2. Action Validation & Rule Adjudication
+        3. Environment & Lore Update
+        4. Narrative Description & Dialogue
+        5. Director Oversight & Pacing
+        6. Event Recording & Memory Sync
+        7. Loop Iteration & Scene Transition
 
         Args:
             state: Current GameState
             config: Optional LangGraph config (session ID, etc.)
 
         Returns:
-            GameState after turn execution
+            Tuple of (updated GameState, GameplayPhaseState)
 
         Raises:
             RuntimeError: If turn execution fails
@@ -406,9 +423,18 @@ class OrchestratorService:
         logger.info(f"Executing turn {turn} (session: {session_id})")
 
         try:
-            final_state = await self.compiled_graph.ainvoke(state, config=config)
+            # Use GameplayExecutor for comprehensive turn orchestration
+            updated_state, gameplay_state = await self.gameplay_executor.execute_turn(
+                state,
+                self.resolver,
+                self.judge,
+                self.world_engine,
+                self.lore_builder,
+                self.dm,
+                self.director
+            )
             logger.debug(f"Turn {turn} completed successfully")
-            return final_state
+            return updated_state, gameplay_state
 
         except Exception as e:
             logger.error(f"Turn {turn} execution failed: {e}", exc_info=True)
