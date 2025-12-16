@@ -4,7 +4,11 @@ from src.core.types import GameState, NarrativeState, CampaignBlueprint
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
 from src.services.structured_output import get_structured_output
+from src.services.agent_context_hub import AgentMessage, MessageType
 from langchain_core.messages import SystemMessage, HumanMessage
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class StoryArchitectAgent(BaseAgent):
@@ -36,6 +40,9 @@ class StoryArchitectAgent(BaseAgent):
             else setting.get("story_length", 2000)
         )
 
+        # Get context hub for broadcasting messages
+        context_hub = state.get("_context_hub")
+
         system_prompt = """You are an expert AI Story Architect using the STORYTELLER framework.
         Create a high-level campaign blueprint ensuring narrative coherence and logical consistency.
         Structure the story using Subject-Verb-Object (SVO) events for key beats (PlotNodes).
@@ -44,6 +51,9 @@ class StoryArchitectAgent(BaseAgent):
         CRITICAL: When specifying relationships for entities, ALWAYS use lists even for single values.
         Example: "located_in": ["location_id"] NOT "located_in": "location_id"
         Example: "allies": ["char_1", "char_2"] NOT "allies": "char_1"
+        
+        Make the narrative engaging, with clear hooks that will drive player decisions.
+        Ensure thematic consistency throughout the story arc.
         """
 
         # Use raw string to avoid f-string format specifier issues with JSON examples
@@ -53,8 +63,8 @@ class StoryArchitectAgent(BaseAgent):
         Target Length: {story_length} words equivalent
 
         Generate a campaign blueprint including:
-        1. A Title and Tagline.
-        2. An Overview (Act I, II, III).
+        1. A Title and Tagline that capture the essence.
+        2. An Overview (Act I, II, III) with clear story progression.
         3. A structured Storyline with 5-10 PlotNodes.
            Each PlotNode must have:
            - An ID (e.g., "beat_01", "beat_02").
@@ -83,9 +93,11 @@ class StoryArchitectAgent(BaseAgent):
 
         messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
 
+        logger.info("📖 Story Architect generating campaign blueprint...")
         blueprint: CampaignBlueprint = await get_structured_output(
             self.model, messages, CampaignBlueprint
         )
+        logger.info(f"✅ Campaign created: {blueprint.title}")
 
         # DEFENSIVE: Post-process relationships to ensure all values are lists
         for entity in blueprint.initial_entities:
@@ -112,7 +124,24 @@ class StoryArchitectAgent(BaseAgent):
             narrative_tension=0.1,
         )
 
-        return {"narrative": new_narrative}
+        # Broadcast narrative update to context hub
+        if context_hub:
+            message = AgentMessage(
+                sender="Story Architect",
+                message_type=MessageType.NARRATIVE_UPDATE,
+                content={
+                    "title": blueprint.title,
+                    "tagline": blueprint.tagline,
+                    "overview": blueprint.overview,
+                    "num_entities": len(blueprint.initial_entities),
+                    "num_plot_nodes": len(blueprint.storyline),
+                },
+                target_agents=["Lore Builder", "Director"],
+            )
+            context_hub.broadcast(message)
+            logger.debug(f"✓ Broadcast narrative update to context hub")
+
+        return {"narrative": new_narrative, "_context_hub": context_hub}
 
     async def process(self, state: GameState) -> dict[str, Any]:
         return await self.plan_narrative(state)
