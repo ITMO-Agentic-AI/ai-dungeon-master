@@ -112,7 +112,7 @@ class EventNode(BaseModel):
     state_changes: list[WorldStateChange] = Field(default_factory=list)
     
     # Narrative context
-    scene_context: str = Field(description="Where/when this occurred")
+    scene_context: str = Field(default="", description="Where/when this occurred")
     npc_reactions: dict[str, str] = Field(default_factory=dict, description="NPC ID -> reaction text")
     
     # Continuity
@@ -219,7 +219,10 @@ class GameplayPhaseState(BaseModel):
     
     # Current turn state
     turn_number: int
-    player_actions: list[dict] = Field(description="Actions taken this turn")
+    player_actions: list[dict] = Field(
+        default_factory=list,
+        description="Actions taken this turn"
+    )
     outcome_tokens: list[ActionOutcomeToken] = Field(default_factory=list)
     world_state_deltas: list[WorldStateChange] = Field(default_factory=list)
     
