@@ -5,7 +5,6 @@ from src.core.types import GameState, WorldState, Region, Culture, KeyNPC, World
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
 from src.services.structured_output import get_structured_output
-from src.services.agent_context_hub import AgentMessage, MessageType
 from langchain_core.messages import SystemMessage, HumanMessage
 import logging
 
@@ -38,26 +37,17 @@ class LoreBuilderAgent(BaseAgent):
         """
         Step 2: Deep World-Building.
         Uses the 'narrative' blueprint from Phase 1 to generate concrete lore.
+        
+        NOTE: Services (context_hub, knowledge_graph) are managed by Orchestrator,
+        not stored in state (which is serialized). Agents can access them through
+        the orchestrator singleton if needed.
         """
         # Retrieve Phase 1 output
         narrative = state["narrative"]
         setting = state["setting"]
-        context_hub = state.get("_context_hub")
-        knowledge_graph = state.get("knowledge_graph")
 
         # FIXED: theme is in Setting, not NarrativeState
         theme = setting.theme
-
-        # Get narrative context from hub
-        narrative_context = ""
-        if context_hub:
-            latest_narrative = context_hub.get_latest_narrative_context()
-            if latest_narrative:
-                narrative_context = (
-                    f"\n\nStory Context from Architect: "
-                    f"{latest_narrative.get('title', 'Untitled')} - "
-                    f"{latest_narrative.get('overview', '')[:200]}"
-                )
 
         system_prompt = """You are an expert World-Building AI.
         Your task is to create a 'World Bible' that supports the provided Story Blueprint.
@@ -75,7 +65,7 @@ class LoreBuilderAgent(BaseAgent):
         Campaign Title: {narrative.title}
         Theme: {theme}
         Story Summary: {narrative.story_arc_summary}
-        Major Factions/Antagonists: {', '.join(narrative.major_factions)}{narrative_context}
+        Major Factions/Antagonists: {', '.join(narrative.major_factions)}
 
         # Requirement
         Generate a detailed World Bible containing:
@@ -108,66 +98,12 @@ class LoreBuilderAgent(BaseAgent):
             important_npcs=bible.key_npcs,
         )
 
-        # Update knowledge graph with world entities
-        if knowledge_graph:
-            # Add regions
-            for region in bible.regions:
-                knowledge_graph.add_entity(
-                    f"region_{region.name.lower()}",
-                    "region",
-                    {"name": region.name, "description": region.description},
-                )
-
-            # Add cultures
-            for culture in bible.cultures:
-                culture_id = f"culture_{culture.name.lower()}"
-                knowledge_graph.add_entity(
-                    culture_id, "culture", culture.model_dump()
-                )
-
-            # Add NPCs
-            for npc in bible.key_npcs:
-                npc_id = f"npc_{npc.name.lower()}"
-                knowledge_graph.add_entity(npc_id, "npc", npc.model_dump())
-
-                # Add location relationship if available
-                if hasattr(npc, "region") and npc.region:
-                    region_id = f"region_{npc.region.lower()}"
-                    knowledge_graph.add_relation(
-                        npc_id, "located_in", region_id, source_agent="Lore Builder"
-                    )
-
-            logger.debug(
-                f"✓ Knowledge graph updated with "
-                f"{len(bible.regions)} regions, "
-                f"{len(bible.cultures)} cultures, "
-                f"{len(bible.key_npcs)} NPCs"
-            )
-
-        # Broadcast world update to context hub
-        if context_hub:
-            message = AgentMessage(
-                sender="Lore Builder",
-                message_type=MessageType.WORLD_CHANGE,
-                content={
-                    "world_name": bible.world_name,
-                    "tone": bible.tone,
-                    "num_regions": len(bible.regions),
-                    "num_cultures": len(bible.cultures),
-                    "num_npcs": len(bible.key_npcs),
-                    "description": bible.world_summary[:100],
-                },
-                target_agents=["World Engine", "Director", "Dungeon Master"],
-            )
-            context_hub.broadcast(message)
-            logger.debug("✓ Broadcast world update to context hub")
+        # NOTE: Knowledge graph population is handled by orchestrator if needed
+        # Agents should not maintain mutable state outside GameState
+        logger.info("📛 Lore Builder complete")
 
         # Return state update (merges into GameState['world'])
-        return {
-            "world": new_world_state,
-            "knowledge_graph": knowledge_graph,
-            "_context_hub": context_hub,
-        }
+        return {"world": new_world_state}
 
     async def answer_question(self, state: GameState) -> dict[str, Any]:
         """
@@ -227,21 +163,7 @@ class LoreBuilderAgent(BaseAgent):
 
         response = await self.model.ainvoke(messages_to_send)
 
-        # Broadcast lore query response
-        context_hub = state.get("_context_hub")
-        if context_hub:
-            message = AgentMessage(
-                sender="Lore Builder",
-                message_type=MessageType.LORE_RESPONSE,
-                content={
-                    "question": player_question,
-                    "response_preview": str(response.content)[:100],
-                },
-                target_agents=["Dungeon Master", "Director"],
-            )
-            context_hub.broadcast(message)
-
-        return {"messages": [response], "_context_hub": context_hub}
+        return {"messages": [response]}
 
     async def process(self, state: GameState) -> dict[str, Any]:
         return await self.build_lore(state)
