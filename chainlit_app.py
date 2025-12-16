@@ -32,12 +32,15 @@ async def on_suggestion_click(action: cl.Action):
     """Handle when player clicks a suggestion button."""
     suggestion_text = action.payload.get("action")
     if suggestion_text:
-        # Create a message object with the suggestion text
-        message = cl.Message(content=suggestion_text)
-        # Process it through the normal message handler
-        await handle_message(message)
-        # Remove the action buttons after selection
+        # Remove the action buttons immediately
         await action.remove()
+
+        # Send the suggestion as a user message to trigger proper message handling
+        user_msg = cl.Message(content=suggestion_text, author="User")
+        await user_msg.send()
+
+        # Process it through the normal message handler
+        await handle_message(user_msg)
 
 
 def derive_session_id_from_name(session_name: str) -> str:
@@ -90,9 +93,7 @@ async def initialize_game_state(session_id: str, session_name: str) -> GameState
         Setting,
     )
 
-    logger.log_event(
-        "System", "Init", f"Initializing game state: {session_name} ({session_id})"
-    )
+    logger.log_event("System", "Init", f"Initializing game state: {session_name} ({session_id})")
 
     initial_storyline = Storyline(nodes=[], current_phase="Intro")
 
@@ -159,9 +160,7 @@ async def initialize_game_state(session_id: str, session_name: str) -> GameState
         "action_suggestions": [],
     }
 
-    logger.log_event(
-        "System", "Debug", f"GameState initialized: {session_id}", level="debug"
-    )
+    logger.log_event("System", "Debug", f"GameState initialized: {session_id}", level="debug")
     return state
 
 
@@ -238,14 +237,24 @@ async def start():
             ],
         ).send()
 
-        if res and res.get("value") == "NEW":
+        # Log the selection for debugging - check both name and value fields
+        logger.log_event("System", "Selection", f"Response object: {res}")
+
+        # AskActionMessage returns the action name, not value
+        selected_value = res.get("name") if res else None
+        logger.log_event("System", "Selection", f"User selected (name): {selected_value}")
+
+        if res and res.get("name") == "NEW":
             # Start new game
+            logger.log_event("System", "Route", "Starting new game")
             await start_new_game()
-        elif res and res.get("value"):
+        elif res and res.get("name"):
             # Load existing game
-            await load_existing_game(res.get("value"))
+            logger.log_event("System", "Route", f"Loading session: {res.get('name')}")
+            await load_existing_game(res.get("name"))
         else:
             # Default to new game
+            logger.log_event("System", "Route", "No selection - defaulting to new game")
             await start_new_game()
     else:
         # No saved games, start new
@@ -255,11 +264,8 @@ async def start():
 
 async def start_new_game():
     """Initialize a new game session."""
-    msg = cl.Message(content="Creating new adventure...", author="System")
-    await msg.send()
-
     try:
-        # Ask user for session name
+        # Ask user for session name FIRST - before any messages
         ask_result = await cl.AskUserMessage(
             content="📝 Name your session (e.g. 'Temple Run #1'):",
             timeout=60,
@@ -278,7 +284,12 @@ async def start_new_game():
             f"User selected session name: '{session_name}' (ID: {session_id})",
         )
 
+        # Now create message and start initialization
+        msg = cl.Message(content="Creating new adventure...", author="System")
+        await msg.send()
+
         # Initialize state
+        await msg.stream_token("\n\nInitializing world...")
         state = await initialize_game_state(session_id, session_name)
 
         # Run Phase 1 (World Initialization)
@@ -293,51 +304,57 @@ async def start_new_game():
         cl.user_session.set("game_state", state)
         cl.user_session.set("session_id", session_id)
 
-        # Prepare all visual elements in the correct order
+        # Get narrative and players
         narrative = state.get("narrative")
         players = state.get("players", [])
-        all_elements = []
 
-        # 1. Location image FIRST (provides visual context at the top)
+        # Create WorldScene component with map and character cards
         if narrative and narrative.current_scene:
+            from src.services.asset_service import AssetService
+
             scene_type = asset_service.detect_scene_type(narrative.current_scene)
             location_img = asset_service.get_location_image(
                 scene_type, size="large", display="inline"
             )
+
+            # Prepare character data for WorldScene
+            characters_data = []
+            if players:
+                for player in players[:3]:
+                    portrait_path = AssetService.CHARACTER_IMAGE_PATHS.get(
+                        player.class_name.lower(), "public/images/characters/character.jpeg"
+                    )
+
+                    characters_data.append(
+                        {
+                            "name": player.name,
+                            "race": player.race,
+                            "className": player.class_name,
+                            "level": player.level,
+                            "hp": player.stats.current_hit_points,
+                            "maxHp": player.stats.max_hit_points,
+                            "ac": player.stats.armor_class,
+                            "imagePath": portrait_path,
+                        }
+                    )
+
+            # Create WorldScene custom element
             if location_img:
-                all_elements.append(location_img)
-
-        # 2. Character cards SECOND (below the scene image)
-        if players:
-            for player in players[:3]:
-                portrait_path = f"public/images/characters/{player.class_name.lower()}.jpeg"
-
-                card_props = {
-                    "name": player.name,
-                    "race": player.race,
-                    "className": player.class_name,
-                    "level": player.level,
-                    "hp": player.stats.current_hit_points,
-                    "maxHp": player.stats.max_hit_points,
-                    "ac": player.stats.armor_class,
-                    "imagePath": portrait_path,
-                    "motivation": player.motivation,
-                    "background": player.background,
-                }
-
-                character_card = cl.CustomElement(
-                    name="CharacterCard", props=card_props, display="inline"
+                world_scene = cl.CustomElement(
+                    name="WorldScene",
+                    props={
+                        "mapImagePath": location_img.path,
+                        "sceneTitle": narrative.title,
+                        "sceneTagline": narrative.tagline,
+                        "characters": characters_data,
+                    },
+                    display="inline",
                 )
-                all_elements.append(character_card)
 
-        # Set all elements at once before streaming text
-        if all_elements:
-            msg.elements = all_elements
+                await cl.Message(content="", elements=[world_scene], author="System").send()
 
-        # Now stream the narrative text content
+        # Stream the narrative text content
         intro = "\n\n# World Created\n\n"
-        intro += f"## {narrative.title}\n\n"
-        intro += f"*{narrative.tagline}*\n\n"
         intro += f"**Session:** {session_name}\n\n"
         await msg.stream_token(intro)
 
@@ -350,15 +367,17 @@ async def start_new_game():
                 content = getattr(game_msg, "content", str(game_msg))
                 await msg.stream_token(f"{content}\n\n")
 
-        # Show action suggestions
-        suggestions = state.get("action_suggestions", [])
-        if suggestions:
-            await msg.stream_token("\n\n**What might you do?**\n\n")
-            for i, suggestion in enumerate(suggestions, 1):
-                await msg.stream_token(f"{i}. {suggestion}\n")
-
         # Final update to display everything together
         await msg.update()
+
+        # Show action suggestions in separate message
+        suggestions = state.get("action_suggestions", [])
+        if suggestions:
+            suggestions_text = "**What might you do?**\n\n"
+            for i, suggestion in enumerate(suggestions, 1):
+                suggestions_text += f"{i}. {suggestion}\n"
+
+            await cl.Message(content=suggestions_text, author="System").send()
 
         logger.log_event("System", "Init", f"New game started: {session_id}")
 
@@ -379,66 +398,117 @@ async def load_existing_game(session_id: str):
         cl.user_session.set("game_state", state)
         cl.user_session.set("session_id", session_id)
 
-        # Prepare all visual elements in the correct order
+        # Get narrative, players, and metadata
         narrative = state.get("narrative")
         players = state.get("players", [])
         turn = state.get("metadata", {}).get("turn", 0)
         session_name = state.get("metadata", {}).get("session_name", "Unknown")
-        all_elements = []
 
-        # 1. Location image FIRST
+        # Create WorldScene component with map and character cards
         if narrative and narrative.current_scene:
+            from src.services.asset_service import AssetService
+
             scene_type = asset_service.detect_scene_type(narrative.current_scene)
             location_img = asset_service.get_location_image(
                 scene_type, size="large", display="inline"
             )
+
+            # Prepare character data for WorldScene
+            characters_data = []
+            if players:
+                for player in players[:3]:
+                    portrait_path = AssetService.CHARACTER_IMAGE_PATHS.get(
+                        player.class_name.lower(), "public/images/characters/character.jpeg"
+                    )
+
+                    characters_data.append(
+                        {
+                            "name": player.name,
+                            "race": player.race,
+                            "className": player.class_name,
+                            "level": player.level,
+                            "hp": player.stats.current_hit_points,
+                            "maxHp": player.stats.max_hit_points,
+                            "ac": player.stats.armor_class,
+                            "imagePath": portrait_path,
+                        }
+                    )
+
+            # Create WorldScene custom element
             if location_img:
-                all_elements.append(location_img)
-
-        # 2. Character cards SECOND
-        if players:
-            for player in players[:3]:
-                portrait_path = f"public/images/characters/{player.class_name.lower()}.jpeg"
-
-                card_props = {
-                    "name": player.name,
-                    "race": player.race,
-                    "className": player.class_name,
-                    "level": player.level,
-                    "hp": player.stats.current_hit_points,
-                    "maxHp": player.stats.max_hit_points,
-                    "ac": player.stats.armor_class,
-                    "imagePath": portrait_path,
-                    "motivation": player.motivation,
-                    "background": player.background,
-                }
-
-                character_card = cl.CustomElement(
-                    name="CharacterCard", props=card_props, display="inline"
+                world_scene = cl.CustomElement(
+                    name="WorldScene",
+                    props={
+                        "mapImagePath": location_img.path,
+                        "sceneTitle": narrative.title if narrative else "Campaign",
+                        "sceneTagline": f"Turn {turn} - {session_name}",
+                        "characters": characters_data,
+                    },
+                    display="inline",
                 )
-                all_elements.append(character_card)
 
-        # Set all elements before streaming text
-        if all_elements:
-            msg.elements = all_elements
+                await cl.Message(content="", elements=[world_scene], author="System").send()
 
-        # Stream text content
+        # Stream session info
         await msg.stream_token("\n\n# Session Loaded\n\n")
-        await msg.stream_token(f"## {narrative.title if narrative else 'Campaign'}\n\n")
         await msg.stream_token(f"**Session:** {session_name}\n\n")
         await msg.stream_token(f"**Turn:** {turn}\n\n")
-        await msg.stream_token("Ready to continue your adventure!\n")
+
+        # Restore chat history - filter out system/initialization messages
+        messages = state.get("messages", [])
+        game_messages = []
+
+        # Filter to only show actual game messages (skip world building/initialization)
+        for game_msg in messages:
+            content = getattr(game_msg, "content", str(game_msg))
+            # Skip empty messages or system initialization messages
+            if content and not any(
+                skip_phrase in content.lower()
+                for skip_phrase in [
+                    "building the world",
+                    "initializing",
+                    "world created",
+                    "generating",
+                    "creating",
+                ]
+            ):
+                game_messages.append(content)
+
+        if game_messages:
+            await msg.stream_token("\n\n---\n\n## Game History\n\n")
+            for content in game_messages:
+                await msg.stream_token(f"{content}\n\n")
+        else:
+            await msg.stream_token("Ready to continue your adventure!\n\n")
+
+        # Play background music based on current scene
+        if narrative and narrative.current_scene:
+            scene_type = asset_service.detect_scene_type(narrative.current_scene)
+            is_combat = state.get("combat") is not None
+            music = asset_service.get_scene_music(scene_type, combat=is_combat, auto_play=False)
+            if music:
+                await cl.Message(content="", elements=[music], author="System").send()
 
         # Final update
         await msg.update()
+
+        # Show action suggestions in separate message
+        suggestions = state.get("action_suggestions", [])
+        if suggestions:
+            suggestions_text = "**What might you do?**\n\n"
+            for i, suggestion in enumerate(suggestions, 1):
+                suggestions_text += f"{i}. {suggestion}\n"
+
+            await cl.Message(content=suggestions_text, author="System").send()
 
         logger.log_event("System", "Load", f"Loaded session: {session_id}")
 
     except Exception as e:
         logger.log_event("System", "Error", f"Failed to load session: {e}", level="error")
-        await cl.Message(content=f"Failed to load session: {e}", author="System").send()
-        # Fall back to new game
-        await start_new_game()
+        await cl.Message(
+            content=f"❌ Failed to load session: {e}\n\nPlease select another session from the menu or start a new game.",
+            author="System",
+        ).send()
 
 
 @cl.on_message

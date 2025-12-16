@@ -39,12 +39,18 @@ class AssetService:
         "fighter": "public/images/characters/warrior.jpeg",
         "wizard": "public/images/characters/wizard.jpeg",
         "mage": "public/images/characters/wizard.jpeg",
+        "sorcerer": "public/images/characters/wizard.jpeg",
         "rogue": "public/images/characters/rogue.jpeg",
         "thief": "public/images/characters/rogue.jpeg",
         "cleric": "public/images/characters/cleric.jpeg",
+        "priest": "public/images/characters/cleric.jpeg",
         "paladin": "public/images/characters/paladin.jpeg",
         "ranger": "public/images/characters/ranger.jpeg",
         "bard": "public/images/characters/bard.jpeg",
+        "druid": "public/images/characters/ranger.jpeg",  # fallback to ranger
+        "monk": "public/images/characters/warrior.jpeg",  # fallback to warrior
+        "barbarian": "public/images/characters/warrior.jpeg",  # fallback to warrior
+        "warlock": "public/images/characters/wizard.jpeg",  # fallback to wizard
     }
 
     MAP_IMAGE_PATHS = {
@@ -131,7 +137,9 @@ class AssetService:
                 size=size,
             )
         else:
-            print(f"❌ Character portrait NOT found for: '{character_class}' (tried: '{class_lower}')")
+            print(
+                f"❌ Character portrait NOT found for: '{character_class}' (tried: '{class_lower}')"
+            )
         return None
 
     @staticmethod
