@@ -7,6 +7,7 @@ from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
 from src.core.types import GameState
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
+from src.core.agent_specialization import SpecializationContext
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class DungeonMasterAgent(BaseAgent):
         setting = state.get("setting")
         world = state.get("world")
         players = state.get("players", [])
+        context_hub = state.get("_context_hub")
 
         if not narrative or not world or not players:
             return {
@@ -84,6 +86,13 @@ class DungeonMasterAgent(BaseAgent):
             )
             npc_context = f"NPCs present: {npc_names}"
 
+        # Get context from hub
+        hub_context = ""
+        if context_hub:
+            lore_ctx = context_hub.get_lore_context()
+            if lore_ctx["recent_changes"]:
+                hub_context = f"\nWorld context: {'; '.join(lore_ctx['recent_changes'][:2])}"
+
         system_prompt = f"""You are the Dungeon Master for a {theme} campaign.
 
 Craft an IMMERSIVE OPENING that plunges the players directly into the story - IN MEDIA RES.
@@ -118,11 +127,12 @@ Core: {narrative.story_arc_summary[:150]}
 
 Characters: {player_names}
 Setting: {location_description}
-{npc_context}
+{npc_context}{hub_context}
         """
 
         messages = [SystemMessage(content=system_prompt), HumanMessage(content=context_block)]
 
+        logger.info("🎭 DM narrating initial scene...")
         response = await self.model.ainvoke(messages)
 
         # Extract narrative and suggestions
@@ -135,12 +145,16 @@ Setting: {location_description}
         """
         Phase 7b: The Narrator.
         Synthesizes the mechanical outcome into vivid prose.
+        Uses specialization context to adapt narration to game phase and tension.
 
         IMPROVED: Returns both narrative and explicit action suggestions in JSON format.
+        ENHANCED: Incorporates specialization guidance for phase-appropriate narration.
         """
         outcome = state.get("last_outcome")
         directives = state.get("director_directives")
         action = state.get("current_action")
+        specialization = state.get("specialization")
+        context_hub = state.get("_context_hub")
 
         if not outcome:
             return {
@@ -164,6 +178,19 @@ Setting: {location_description}
         if directives:
             tone_hint = f"Tone/mood to weave in subtly: {directives.narrative_focus}"
 
+        # Add specialization guidance
+        specialization_hint = ""
+        if specialization:
+            phase_guidance = specialization.get_specialization_prompt("dungeon_master")
+            specialization_hint = f"\n\nPhase Context:\n{phase_guidance}"
+
+        # Add context from hub
+        hub_context = ""
+        if context_hub:
+            recent_world = context_hub.get_world_state_updates(limit=1)
+            if recent_world:
+                hub_context = f"\nRecent world state: {recent_world[0].get('content', {}).get('description', '')}"
+
         system_prompt = f"""You are the Dungeon Master.
 
 Narrate the IMMEDIATE CONSEQUENCE of the player's action in visceral, immersive prose.
@@ -175,7 +202,7 @@ CRITICAL RULES:
 4. Status: {'SUCCESS - the action had its intended effect' if outcome.success else 'FAILURE - unexpected consequences unfold'}.
 5. Keep the momentum going. The next prompt should feel inevitable, not optional.
 6. ABSOLUTELY NO action menu format. Pure narrative continuation only.
-7. Target length: 150-250 words.
+7. Target length: 150-250 words.{specialization_hint}
 
 AFTER the narrative (on a new line), you MUST output a JSON block with action suggestions:
 
@@ -195,11 +222,12 @@ Suggestions should flow naturally from the narrative and provide clear next step
 
         context_block = f"""Action: {action.description if action else 'Unknown'}
 Outcome: {outcome.narrative_result}
-Location: {actor_location}
+Location: {actor_location}{hub_context}
         """
 
         messages = [SystemMessage(content=system_prompt), HumanMessage(content=context_block)]
 
+        logger.debug("🎭 DM narrating action outcome...")
         response = await self.model.ainvoke(messages)
 
         # Extract narrative and suggestions
