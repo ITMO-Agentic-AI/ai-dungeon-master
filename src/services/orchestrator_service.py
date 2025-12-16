@@ -18,6 +18,11 @@ from src.agents.rule_judge.graph import JudgeAgent
 from src.agents.director.graph import DirectorAgent
 from src.agents.dungeon_master.graph import DungeonMasterAgent
 
+# Import collaboration services
+from src.services.agent_context_hub import AgentContextHub
+from src.services.knowledge_graph_service import KnowledgeGraphService
+from src.core.agent_specialization import SpecializationContext
+
 logger = logging.getLogger(__name__)
 
 
@@ -74,7 +79,11 @@ class OrchestratorService:
         self.director = DirectorAgent()
         self.dm = DungeonMasterAgent()
 
-        logger.info("OrchestratorService initialized with all agents")
+        # Initialize collaboration services
+        self.context_hub = AgentContextHub()
+        self.knowledge_graph = KnowledgeGraphService()
+
+        logger.info("OrchestratorService initialized with all agents and collaboration services")
 
     async def build_pipeline(self) -> None:
         """
@@ -326,10 +335,19 @@ class OrchestratorService:
         # Ensure response_type is clean
         clean_state["response_type"] = "unknown"
 
+        # Add collaboration services to state
+        clean_state["_context_hub"] = self.context_hub
+        clean_state["knowledge_graph"] = self.knowledge_graph
+        clean_state["specialization"] = None
+
         try:
             # Using clean_state replace state
             final_state = await self.compiled_graph.ainvoke(clean_state, config=config)
             logger.info("World initialization completed successfully")
+
+            # Update shared collaboration services
+            self.context_hub = final_state.get("_context_hub", self.context_hub)
+            self.knowledge_graph = final_state.get("knowledge_graph", self.knowledge_graph)
 
             # Log what was created
             players = final_state.get("players", [])
@@ -343,6 +361,19 @@ class OrchestratorService:
                 logger.info(
                     f"World has {len(world.locations)} locations and {len(world.active_npcs)} NPCs"
                 )
+
+            # Log collaboration hub statistics
+            hub_stats = self.context_hub.get_statistics()
+            logger.info(
+                f"Context Hub: {hub_stats['total_messages']} messages, "
+                f"{hub_stats['active_agents']} active agents"
+            )
+            kg_report = self.knowledge_graph.generate_consistency_report()
+            logger.info(
+                f"Knowledge Graph: {kg_report['total_entities']} entities, "
+                f"{kg_report['total_relations']} relations, "
+                f"consistency={kg_report['consistency_score']:.0%}"
+            )
 
             return final_state
 
@@ -391,9 +422,19 @@ class OrchestratorService:
 
         logger.info(f"Executing turn {turn} (session: {session_id})")
 
+        # Add collaboration context
+        state["_context_hub"] = self.context_hub
+        state["knowledge_graph"] = self.knowledge_graph
+        state["specialization"] = SpecializationContext(state)
+
         try:
             final_state = await self.compiled_graph.ainvoke(state, config=config)
             logger.debug(f"Turn {turn} completed successfully")
+
+            # Update shared state
+            self.context_hub = final_state.get("_context_hub", self.context_hub)
+            self.knowledge_graph = final_state.get("knowledge_graph", self.knowledge_graph)
+
             return final_state
 
         except Exception as e:
