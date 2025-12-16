@@ -32,6 +32,10 @@ class OrchestratorService:
 
     **CRITICAL**: This orchestrator integrates with agents that have their own internal LangGraphs.
 
+    **IMPORTANT**: Collaboration services (context_hub, knowledge_graph) are NOT stored in GameState
+    because GameState is serialized with msgpack for checkpointing. These are managed directly in the
+    orchestrator and passed as function arguments to agents.
+
     Phase 1: Setup Pipeline (returns to caller on completion)
     - StoryArchitectAgent.plan_narrative() -> generates narrative blueprint
     - LoreBuilderAgent.build_lore() -> generates world lore
@@ -79,7 +83,7 @@ class OrchestratorService:
         self.director = DirectorAgent()
         self.dm = DungeonMasterAgent()
 
-        # Initialize collaboration services
+        # Initialize collaboration services (NOT IN GameState - managed here)
         self.context_hub = AgentContextHub()
         self.knowledge_graph = KnowledgeGraphService()
 
@@ -120,9 +124,6 @@ class OrchestratorService:
 
             builder.add_node("initial_dm", self.dm.narrate_initial)
 
-            # NEW: Phase 1 exit node
-            builder.add_node("phase1_complete", self._phase1_complete_node)
-
             # --- Phase 2: Single-Turn Gameplay ---
             builder.add_node("dm_planner", self.dm.plan_response)
             builder.add_node("action_resolver", self.resolver.resolve_action)
@@ -133,9 +134,6 @@ class OrchestratorService:
             builder.add_node("director", self.director.direct_scene)
             builder.add_node("dm_outcome", self.dm.narrate_outcome)
             builder.add_node("exit_check", self._exit_check_node)
-
-            # NEW: Turn completion node
-            builder.add_node("turn_complete", self._turn_complete_node)
 
             logger.debug("Registered all graph nodes")
 
@@ -250,12 +248,12 @@ class OrchestratorService:
             builder.add_edge("action_resolver", "judge")
             builder.add_conditional_edges("judge", route_judge)
 
-            # Update path: World -> Players -> Director -> Outcome -> TURN COMPLETE
+            # Update path: World -> Players -> Director -> Outcome -> END
             builder.add_edge("world_engine_update", "player_creator_update")
             builder.add_edge("player_creator_update", "director")
             builder.add_edge("director", "dm_outcome")
 
-            # Question resolution path: Question -> Director -> Outcome -> TURN COMPLETE
+            # Question resolution path: Question -> Director -> Outcome -> END
             builder.add_edge("lore_builder_question", "director")
             builder.add_edge("director", "dm_outcome")
 
@@ -299,8 +297,7 @@ class OrchestratorService:
         3. WorldEngineAgent creates locations and NPCs
         4. PlayerProxyAgent.process() creates characters IN PARALLEL (via Send API)
         5. DungeonMasterAgent provides initial narration
-        6. phase1_complete marks end of setup
-        7. Graph exits and returns state
+        6. Graph exits and returns state
 
         Args:
             state: Initial GameState
@@ -327,27 +324,16 @@ class OrchestratorService:
             "Phase 1: Story Architect -> Lore Builder -> World Engine -> Player Creator (PARALLEL) -> Initial DM -> Complete"
         )
 
-        # Add new part: Force cleanup state to prevent Phase 1 from reading dirty data and causing an infinite loop
-        # It must be ensured that players is empty and last_outcome is None
+        # Prepare state - reset for clean Phase 1
         clean_state = state.copy()
         clean_state["last_outcome"] = None
         clean_state["players"] = []
-        # Ensure response_type is clean
         clean_state["response_type"] = "unknown"
 
-        # Add collaboration services to state
-        clean_state["_context_hub"] = self.context_hub
-        clean_state["knowledge_graph"] = self.knowledge_graph
-        clean_state["specialization"] = None
-
         try:
-            # Using clean_state replace state
+            # Run graph WITHOUT passing services to GameState
             final_state = await self.compiled_graph.ainvoke(clean_state, config=config)
             logger.info("World initialization completed successfully")
-
-            # Update shared collaboration services
-            self.context_hub = final_state.get("_context_hub", self.context_hub)
-            self.knowledge_graph = final_state.get("knowledge_graph", self.knowledge_graph)
 
             # Log what was created
             players = final_state.get("players", [])
@@ -393,12 +379,9 @@ class OrchestratorService:
 
         Flow (single turn):
         1. DM Planner decides: action, question, or exit
-        2a. If action: resolve -> judge -> world update -> director -> narration -> turn complete
-        2b. If question: lore builder -> director -> narration -> turn complete
+        2a. If action: resolve -> judge -> world update -> director -> narration -> END
+        2b. If question: lore builder -> director -> narration -> END
         3. Return to main.py for next player input
-
-        CRITICAL FIX: dm_outcome now routes to turn_complete (END),
-        not back to dm_planner. This prevents infinite loops within ainvoke().
 
         Args:
             state: Current GameState
@@ -422,60 +405,14 @@ class OrchestratorService:
 
         logger.info(f"Executing turn {turn} (session: {session_id})")
 
-        # Add collaboration context
-        state["_context_hub"] = self.context_hub
-        state["knowledge_graph"] = self.knowledge_graph
-        state["specialization"] = SpecializationContext(state)
-
         try:
             final_state = await self.compiled_graph.ainvoke(state, config=config)
             logger.debug(f"Turn {turn} completed successfully")
-
-            # Update shared state
-            self.context_hub = final_state.get("_context_hub", self.context_hub)
-            self.knowledge_graph = final_state.get("knowledge_graph", self.knowledge_graph)
-
             return final_state
 
         except Exception as e:
             logger.error(f"Turn {turn} execution failed: {e}", exc_info=True)
             raise RuntimeError(f"Failed to execute turn: {e}") from e
-
-    def _phase1_complete_node(self, state: GameState) -> GameState:
-        """
-        Marks the end of Phase 1 (world initialization).
-
-        This node signals that setup is complete and the graph should exit.
-        Called before returning to main.py for gameplay loop.
-
-        Args:
-            state: Current GameState after initial DM narration
-
-        Returns:
-            Unchanged GameState (ready for Phase 2 in main.py)
-        """
-        logger.info("Phase 1 setup complete. Ready for gameplay.")
-        return state
-
-    def _turn_complete_node(self, state: GameState) -> GameState:
-        """
-        Marks the end of a single game turn.
-
-        Called after dm_outcome (narration) to signal that this turn is complete.
-        The graph will exit, and main.py will call execute_turn() again for the next turn.
-
-        This is the CRITICAL FIX for the infinite loop:
-        - Before: dm_outcome -> dm_planner (infinite loop until recursion limit)
-        - After: dm_outcome -> turn_complete -> END (graph exits, main.py continues)
-
-        Args:
-            state: Current GameState after turn narration
-
-        Returns:
-            Unchanged GameState (return to main.py)
-        """
-        logger.debug(f"Turn {state['metadata'].get('turn', 0)} complete. Returning to main.py.")
-        return state
 
     def _exit_check_node(self, state: GameState) -> GameState:
         """
