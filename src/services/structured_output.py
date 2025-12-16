@@ -5,7 +5,7 @@ Provides fallback mechanisms when native structured output is not supported.
 Enhanced with:
 - Better error diagnostics
 - Exponential backoff retry logic
-- Connection timeout handling
+- Connection error handling
 - Detailed error messages
 """
 
@@ -37,8 +37,8 @@ async def get_structured_output(
     Features:
     - Exponential backoff between retries
     - Detailed error diagnostics
-    - Connection timeout handling
     - JSON extraction from markdown code blocks
+    - Retry logic for transient failures
 
     Args:
         llm: The language model instance
@@ -78,8 +78,9 @@ Example format:
         try:
             logger.debug(f"Structured output attempt {attempt + 1}/{max_retries}")
 
-            # Invoke LLM with timeout
-            response = await llm.ainvoke(enhanced_messages, timeout=30)
+            # Invoke LLM WITHOUT timeout parameter (not supported by ainvoke)
+            # LangChain ChatOpenAI handles its own timeouts internally
+            response = await llm.ainvoke(enhanced_messages)
             content = response.content.strip()
             logger.debug(f"Got response of length: {len(content)}")
 
@@ -133,19 +134,6 @@ Example format:
                 logger.error(f"Pydantic validation failed: {str(e)}")
                 raise
 
-        except (TimeoutError, asyncio.TimeoutError) as e:
-            last_error = f"Connection timeout: {str(e)}"
-            last_error_type = "TIMEOUT"
-            logger.warning(
-                f"Attempt {attempt + 1} timeout: {str(e)} - API endpoint not responding"
-            )
-            if attempt < max_retries - 1:
-                wait_time = 2**attempt
-                logger.info(
-                    f"Retrying after timeout in {wait_time}s (attempt {attempt + 1}/{max_retries})"
-                )
-                await asyncio.sleep(wait_time)
-
         except Exception as e:
             error_str = str(e).lower()
             last_error = str(e)
@@ -171,6 +159,10 @@ Example format:
                 last_error_type = "RATE_LIMIT"
                 logger.error(f"❌ Rate limit/quota error (attempt {attempt + 1}): {str(e)}")
                 logger.error("   → Wait before retrying or check API quota")
+            elif "timeout" in error_str:
+                last_error_type = "TIMEOUT"
+                logger.error(f"❌ Timeout error (attempt {attempt + 1}): {str(e)}")
+                logger.error("   → API endpoint slow or unreachable")
             else:
                 last_error_type = "UNKNOWN"
                 logger.warning(f"Attempt {attempt + 1} failed: {str(e)}")
