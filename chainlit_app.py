@@ -6,6 +6,7 @@ management and persistent game state.
 """
 
 from datetime import datetime
+import re
 
 import chainlit as cl
 
@@ -39,11 +40,43 @@ async def on_suggestion_click(action: cl.Action):
         await action.remove()
 
 
-async def initialize_game_state() -> GameState:
+def derive_session_id_from_name(session_name: str) -> str:
+    """
+    Derive a safe session_id from a user-friendly session name.
+
+    Rules:
+    - Convert to lowercase
+    - Replace spaces and hyphens with underscores
+    - Remove any other invalid characters
+
+    Args:
+        session_name: User-friendly session name
+
+    Returns:
+        URL-safe session ID (lowercase, underscores)
+    """
+    session_id = session_name.lower()
+    session_id = re.sub(r"\s+", "_", session_id)  # spaces -> underscores
+    session_id = re.sub(r"\-+", "_", session_id)  # hyphens -> underscores
+    session_id = re.sub(r"_+", "_", session_id)  # collapse multiple underscores
+    session_id = session_id.strip("_")  # remove leading/trailing underscores
+
+    # Fallback if name is invalid
+    if not session_id:
+        session_id = f"session_{int(datetime.now().timestamp())}"
+
+    return session_id
+
+
+async def initialize_game_state(session_id: str, session_name: str) -> GameState:
     """
     Initialize a fresh GameState with all required fields.
 
     This is identical to the function in main.py.
+
+    Args:
+        session_id: Normalized session ID (derived from session_name)
+        session_name: User-friendly session name
 
     Returns:
         GameState: Fresh game state with all fields initialized
@@ -57,7 +90,9 @@ async def initialize_game_state() -> GameState:
         Setting,
     )
 
-    logger.log_event("System", "Init", "Initializing fresh game state")
+    logger.log_event(
+        "System", "Init", f"Initializing game state: {session_name} ({session_id})"
+    )
 
     initial_storyline = Storyline(nodes=[], current_phase="Intro")
 
@@ -82,8 +117,6 @@ async def initialize_game_state() -> GameState:
         active_npcs={},
         global_time=0,
     )
-
-    session_id = datetime.now().isoformat()
 
     state: GameState = {
         "user_prompt": "Begin the adventure!",
@@ -114,6 +147,7 @@ async def initialize_game_state() -> GameState:
         "messages": [],
         "metadata": {
             "session_id": session_id,
+            "session_name": session_name,  # NEW: User-visible session name
             "turn": 0,
             "started_at": datetime.now().isoformat(),
         },
@@ -125,7 +159,9 @@ async def initialize_game_state() -> GameState:
         "action_suggestions": [],
     }
 
-    logger.log_event("System", "Debug", f"GameState initialized: {session_id}", level="debug")
+    logger.log_event(
+        "System", "Debug", f"GameState initialized: {session_id}", level="debug"
+    )
     return state
 
 
@@ -223,17 +259,35 @@ async def start_new_game():
     await msg.send()
 
     try:
+        # Ask user for session name
+        ask_result = await cl.AskUserMessage(
+            content="📝 Name your session (e.g. 'Temple Run #1'):",
+            timeout=60,
+        ).send()
+
+        session_name = (ask_result.get("output") or "").strip() if ask_result else ""
+        if not session_name:
+            session_name = f"Adventure {int(datetime.now().timestamp())}"
+
+        # Derive session_id from name
+        session_id = derive_session_id_from_name(session_name)
+
+        logger.log_event(
+            "Session",
+            "Created",
+            f"User selected session name: '{session_name}' (ID: {session_id})",
+        )
+
         # Initialize state
-        state = await initialize_game_state()
+        state = await initialize_game_state(session_id, session_name)
 
         # Run Phase 1 (World Initialization)
         await msg.stream_token("\n\nBuilding the world...")
         state = await orchestrator_service.initialize_world(state)
 
-        # Save session metadata
-        session_id = state["metadata"]["session_id"]
-        session_title = state.get("narrative", {}).title or "Untitled Campaign"
-        session_service.create_session(session_id, session_title)
+        # Save session metadata with user-provided name
+        session_service.create_session(session_id, session_name)
+        logger.log_event("System", "Session", f"Created session: {session_id} ({session_name})")
 
         # Store in user session
         cl.user_session.set("game_state", state)
@@ -257,7 +311,7 @@ async def start_new_game():
         if players:
             for player in players[:3]:
                 portrait_path = f"public/images/characters/{player.class_name.lower()}.jpeg"
-                
+
                 card_props = {
                     "name": player.name,
                     "race": player.race,
@@ -270,11 +324,9 @@ async def start_new_game():
                     "motivation": player.motivation,
                     "background": player.background,
                 }
-                
+
                 character_card = cl.CustomElement(
-                    name="CharacterCard", 
-                    props=card_props, 
-                    display="inline"
+                    name="CharacterCard", props=card_props, display="inline"
                 )
                 all_elements.append(character_card)
 
@@ -286,13 +338,14 @@ async def start_new_game():
         intro = "\n\n# World Created\n\n"
         intro += f"## {narrative.title}\n\n"
         intro += f"*{narrative.tagline}*\n\n"
+        intro += f"**Session:** {session_name}\n\n"
         await msg.stream_token(intro)
 
         # Display initial DM narration
         messages = state.get("messages", [])
         if messages:
             await msg.stream_token("\n\n---\n\n## Dungeon Master\n\n")
-            
+
             for game_msg in messages:
                 content = getattr(game_msg, "content", str(game_msg))
                 await msg.stream_token(f"{content}\n\n")
@@ -330,6 +383,7 @@ async def load_existing_game(session_id: str):
         narrative = state.get("narrative")
         players = state.get("players", [])
         turn = state.get("metadata", {}).get("turn", 0)
+        session_name = state.get("metadata", {}).get("session_name", "Unknown")
         all_elements = []
 
         # 1. Location image FIRST
@@ -345,7 +399,7 @@ async def load_existing_game(session_id: str):
         if players:
             for player in players[:3]:
                 portrait_path = f"public/images/characters/{player.class_name.lower()}.jpeg"
-                
+
                 card_props = {
                     "name": player.name,
                     "race": player.race,
@@ -358,11 +412,9 @@ async def load_existing_game(session_id: str):
                     "motivation": player.motivation,
                     "background": player.background,
                 }
-                
+
                 character_card = cl.CustomElement(
-                    name="CharacterCard", 
-                    props=card_props, 
-                    display="inline"
+                    name="CharacterCard", props=card_props, display="inline"
                 )
                 all_elements.append(character_card)
 
@@ -373,6 +425,7 @@ async def load_existing_game(session_id: str):
         # Stream text content
         await msg.stream_token("\n\n# Session Loaded\n\n")
         await msg.stream_token(f"## {narrative.title if narrative else 'Campaign'}\n\n")
+        await msg.stream_token(f"**Session:** {session_name}\n\n")
         await msg.stream_token(f"**Turn:** {turn}\n\n")
         await msg.stream_token("Ready to continue your adventure!\n")
 
