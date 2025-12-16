@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import re
 
 # import logging
 from src.services.logging_service import logger
@@ -31,17 +32,88 @@ from src.core.config import get_settings
 # logger = logging.getLogger(__name__)
 
 
-async def initialize_game_state() -> GameState:
+def prompt_for_session_name() -> tuple[str, str]:
+    """
+    Ask user for a session name and derive a safe session_id from it.
+
+    Rules for session names:
+    - 1-50 characters
+    - Alphanumeric, spaces, hyphens, underscores
+    - Examples: "Temple Run", "Dragon Hunt #1", "Campaign_2"
+
+    Returns:
+        Tuple of (session_id, session_name)
+        - session_id: URL-safe, normalized ID (lowercase, underscores)
+        - session_name: User-friendly display name
+    """
+    while True:
+        session_name = input(
+            "\n📝 Enter a name for this session (e.g. 'Temple Run #1'): "
+        ).strip()
+
+        # Validation
+        if not session_name:
+            print("❌ Session name cannot be empty.")
+            continue
+
+        if len(session_name) > 50:
+            print("❌ Session name must be at most 50 characters.")
+            continue
+
+        # Check for invalid characters
+        if not re.match(r"^[a-zA-Z0-9\s\-_]+$", session_name):
+            print(
+                "❌ Session name can only contain letters, numbers, spaces, hyphens, and underscores."
+            )
+            continue
+
+        # Derive session_id: lowercase, spaces/hyphens -> underscores
+        session_id = session_name.lower()
+        session_id = re.sub(r"\s+", "_", session_id)  # spaces -> underscores
+        session_id = re.sub(r"\-+", "_", session_id)  # hyphens -> underscores
+        session_id = re.sub(r"_+", "_", session_id)  # collapse multiple underscores
+        session_id = session_id.strip("_")  # remove leading/trailing underscores
+
+        if not session_id:
+            print("❌ Session name must contain at least one letter or number.")
+            continue
+
+        # Check for duplicate session names
+        existing = session_service.get_session(session_id)
+        if existing:
+            print(f"❌ A session named '{session_name}' already exists.")
+            retry = (
+                input("Try a different name? (y/n): ").strip().lower()
+            )
+            if retry in ("y", "yes", ""):
+                continue
+            # User chose to reuse; accept it
+
+        logger.log_event(
+            "System",
+            "Session",
+            f"User selected session name: '{session_name}' (ID: {session_id})",
+        )
+        return session_id, session_name
+
+
+async def initialize_game_state(session_id: str, session_name: str) -> GameState:
     """
     Initialize a fresh GameState with all required fields.
 
     This represents the starting state before world initialization.
     All fields must be properly set to avoid downstream errors.
 
+    Args:
+        session_id: Normalized session ID (derived from session_name)
+        session_name: User-friendly session name
+
     Returns:
         GameState: Fresh game state with all fields initialized
     """
-    logger.log_event("System", "Init", "Initializing fresh game state")
+    logger.log_event(
+        "System", "Init", f"Initializing game state: {session_name} ({session_id})"
+    )
 
     # Create initial storyline (Phase 1 will populate this)
     initial_storyline = Storyline(nodes=[], current_phase="Intro")
@@ -69,8 +141,6 @@ async def initialize_game_state() -> GameState:
         active_npcs={},  # Populated by WorldEngine
         global_time=0,
     )
-
-    session_id = datetime.now().isoformat()
 
     # BUILD THE STATE DICT WITH ALL REQUIRED FIELDS
     # This is CRITICAL - missing any field will cause KeyError later
@@ -110,6 +180,7 @@ async def initialize_game_state() -> GameState:
         # Metadata
         "metadata": {
             "session_id": session_id,
+            "session_name": session_name,  # NEW: User-visible session name
             "turn": 0,
             "started_at": datetime.now().isoformat(),
         },
@@ -124,7 +195,9 @@ async def initialize_game_state() -> GameState:
         "action_suggestions": [],  # DM returns 2-3 suggested actions for player
     }
 
-    logger.log_event("System", "Debug", f"GameState initialized: {session_id}", level="debug")
+    logger.log_event(
+        "System", "Debug", f"GameState initialized: {session_id}", level="debug"
+    )
     return state
 
 
@@ -151,7 +224,11 @@ async def load_session(session_id: str) -> GameState:
     if not snapshot or not snapshot.values:
         raise ValueError(f"Session '{session_id}' not found or has no saved state")
 
-    logger.log_event("System", "Load", f"Loaded session {session_id} at turn {snapshot.values.get('metadata', {}).get('turn', 0)}")
+    logger.log_event(
+        "System",
+        "Load",
+        f"Loaded session {session_id} at turn {snapshot.values.get('metadata', {}).get('turn', 0)}",
+    )
     return snapshot.values
 
 
@@ -183,14 +260,19 @@ async def select_or_create_session() -> tuple[GameState, bool]:
         print("  N. Start New Game")
         print("  Q. Quit")
         print()
-        choice = input("Select option (1-{}, N, Q): ".format(len(sessions[:10]))).strip().upper()
+        choice = (
+            input("Select option (1-{}, N, Q): ".format(len(sessions[:10])))
+            .strip()
+            .upper()
+        )
 
         if choice == "Q":
             print("\n👋 Goodbye!")
             sys.exit(0)
         elif choice == "N":
-            # Create new session
-            return await initialize_game_state(), True
+            # Create new session with user-provided name
+            session_id, session_name = prompt_for_session_name()
+            return await initialize_game_state(session_id, session_name), True
         else:
             # Try to load selected session
             try:
@@ -201,16 +283,21 @@ async def select_or_create_session() -> tuple[GameState, bool]:
                     return state, False
                 else:
                     print("❌ Invalid selection. Starting new game.")
-                    return await initialize_game_state(), True
+                    session_id, session_name = prompt_for_session_name()
+                    return await initialize_game_state(session_id, session_name), True
             except (ValueError, Exception) as e:
-                logger.log_event("System", "Error", f"Failed to load session: {e}", level="error")
+                logger.log_event(
+                    "System", "Error", f"Failed to load session: {e}", level="error"
+                )
                 print(f"❌ Failed to load session: {e}")
                 print("Starting new game instead...")
-                return await initialize_game_state(), True
+                session_id, session_name = prompt_for_session_name()
+                return await initialize_game_state(session_id, session_name), True
     else:
         print("\n📝 No saved sessions found.")
         print("\nStarting new game...")
-        return await initialize_game_state(), True
+        session_id, session_name = prompt_for_session_name()
+        return await initialize_game_state(session_id, session_name), True
 
 
 def validate_game_state(state: GameState) -> bool:
@@ -246,7 +333,9 @@ def validate_game_state(state: GameState) -> bool:
 
     for field in required_fields:
         if field not in state:
-            logger.log_event("System", "Error", f"Missing required field: {field}", level="error")
+            logger.log_event(
+                "System", "Error", f"Missing required field: {field}", level="error"
+            )
             return False
 
     logger.log_event("System", "Debug", "GameState validation passed")
@@ -305,8 +394,12 @@ def display_world_state(state: GameState) -> None:
             print(f"\n🔍 Clues: {', '.join(location.clues[:2])}")
 
     # Show player stats
-    print(f"\n👤 {player.name} ({player.race} {player.class_name}, Level {player.level})")
-    print(f"❤️  HP: {player.stats.current_hit_points}/{player.stats.max_hit_points}")
+    print(
+        f"\n👤 {player.name} ({player.race} {player.class_name}, Level {player.level})"
+    )
+    print(
+        f"❤️  HP: {player.stats.current_hit_points}/{player.stats.max_hit_points}"
+    )
     print(f"⚔️  AC: {player.stats.armor_class}")
     print("=" * 60)
 
@@ -422,20 +515,23 @@ async def run_game_loop() -> None:
         print("\n" + "=" * 60)
         print("📂 SESSION LOADED")
         print("=" * 60)
-        
+
         narrative = state.get("narrative")
         if narrative:
             print(f"\n📖 Campaign: {narrative.title}")
-        
+
+        session_name = state.get("metadata", {}).get("session_name", "Unknown")
+        print(f"📝 Session: {session_name}")
+
         turn = state.get("metadata", {}).get("turn", 0)
         print(f"🔄 Resuming at turn {turn}")
-        
+
         # Skip world initialization - go straight to gameplay
         print("\n" + "=" * 60)
         print("🏰 ADVENTURE CONTINUES 🏰")
         print("=" * 60)
         print("\n(Type 'quit', 'exit', 'end', or 'q' to quit)\n")
-        
+
         # Jump to game loop
         turn = state.get("metadata", {}).get("turn", 0)
     else:
@@ -446,7 +542,9 @@ async def run_game_loop() -> None:
 
         # Validate state
         if not validate_game_state(state):
-            logger.log_event("System", "Error", "Initial GameState validation failed", level="error")
+            logger.log_event(
+                "System", "Error", "Initial GameState validation failed", level="error"
+            )
             print("\n❌ Failed to initialize game (invalid state)")
             sys.exit(1)
 
@@ -472,11 +570,11 @@ async def run_game_loop() -> None:
             print(f"\n❌ Failed to initialize world: {e}")
             sys.exit(1)
 
-        # Save new session metadata
+        # Save new session metadata with user-provided name
         session_id = state["metadata"]["session_id"]
-        session_title = state.get("narrative", {}).title or "Untitled Campaign"
-        session_service.create_session(session_id, session_title)
-        logger.log_event("System", "Session", f"Created session: {session_id}")
+        session_name = state["metadata"].get("session_name", "Untitled Session")
+        session_service.create_session(session_id, session_name)
+        logger.log_event("System", "Session", f"Created session: {session_id} ({session_name})")
 
         # Display initialized world
         print("\n✅ World Created!")
@@ -566,7 +664,7 @@ async def run_game_loop() -> None:
             # CRITICAL: Always reset response_type to ensure proper routing
             state["current_action"] = action
             state["response_type"] = "action"  # This must be set for routing!
-            
+
             # Clear previous turn data to prevent stale routing
             state["last_outcome"] = None
             state["last_verdict"] = None
@@ -579,10 +677,15 @@ async def run_game_loop() -> None:
             # Execute turn through orchestrator
             try:
                 state = await orchestrator_service.execute_turn(state)
-                
+
                 # Save session metadata after successful turn
                 session_service.update_session(session_id, turn)
-                logger.log_event("System", "Debug", f"Saved session metadata for turn {turn}", level="debug")
+                logger.log_event(
+                    "System",
+                    "Debug",
+                    f"Saved session metadata for turn {turn}",
+                    level="debug",
+                )
             except Exception as e:
                 logger.log_event(
                     "System", "Error", f"Turn {turn} execution failed: {e}", level="error"
@@ -609,7 +712,10 @@ async def run_game_loop() -> None:
         # End of game loop
         if turn >= max_turns:
             logger.log_event(
-                "System", "Warning", f"Reached maximum turns ({max_turns})", level="warning"
+                "System",
+                "Warning",
+                f"Reached maximum turns ({max_turns})",
+                level="warning",
             )
             print(f"\n🛑 Reached maximum turns ({max_turns}). Session ended.")
 
