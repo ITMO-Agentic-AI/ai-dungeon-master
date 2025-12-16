@@ -4,7 +4,6 @@ from src.core.types import GameState, NarrativeState, CampaignBlueprint
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
 from src.services.structured_output import get_structured_output
-from src.services.agent_context_hub import AgentMessage, MessageType
 from langchain_core.messages import SystemMessage, HumanMessage
 import logging
 
@@ -39,9 +38,6 @@ class StoryArchitectAgent(BaseAgent):
             if hasattr(setting, "story_length")
             else setting.get("story_length", 2000)
         )
-
-        # Get context hub for broadcasting messages
-        context_hub = state.get("_context_hub")
 
         system_prompt = """You are an expert AI Story Architect using the STORYTELLER framework.
         Create a high-level campaign blueprint ensuring narrative coherence and logical consistency.
@@ -124,24 +120,8 @@ class StoryArchitectAgent(BaseAgent):
             narrative_tension=0.1,
         )
 
-        # Broadcast narrative update to context hub
-        if context_hub:
-            message = AgentMessage(
-                sender="Story Architect",
-                message_type=MessageType.NARRATIVE_UPDATE,
-                content={
-                    "title": blueprint.title,
-                    "tagline": blueprint.tagline,
-                    "overview": blueprint.overview,
-                    "num_entities": len(blueprint.initial_entities),
-                    "num_plot_nodes": len(blueprint.storyline),
-                },
-                target_agents=["Lore Builder", "Director"],
-            )
-            context_hub.broadcast(message)
-            logger.debug(f"✓ Broadcast narrative update to context hub")
-
-        return {"narrative": new_narrative, "_context_hub": context_hub}
+        logger.info("📛 Story Architect complete")
+        return {"narrative": new_narrative}
 
     async def process(self, state: GameState) -> dict[str, Any]:
         return await self.plan_narrative(state)
