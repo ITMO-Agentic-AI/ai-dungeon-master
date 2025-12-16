@@ -1,6 +1,6 @@
 from typing import Any
 from langgraph.graph import StateGraph
-from src.core.types import GameState, NarrativeState, CampaignBlueprint, NarrativeEntity, PlotNode
+from src.core.types import GameState, NarrativeState, CampaignBlueprint
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
 from src.services.structured_output import get_structured_output
@@ -24,15 +24,23 @@ class StoryArchitectAgent(BaseAgent):
         Generates a structured storyline with SVO events and initial narrative entities.
         """
         setting = state["setting"]
-        theme = setting.theme if hasattr(setting, 'theme') else setting.get('theme', 'Fantasy')
-        player_concepts = setting.player_concepts if hasattr(setting, 'player_concepts') else setting.get('player_concepts', [])
-        story_length = setting.story_length if hasattr(setting, 'story_length') else setting.get('story_length', 2000)
+        theme = setting.theme if hasattr(setting, "theme") else setting.get("theme", "Fantasy")
+        player_concepts = (
+            setting.player_concepts
+            if hasattr(setting, "player_concepts")
+            else setting.get("player_concepts", [])
+        )
+        story_length = (
+            setting.story_length
+            if hasattr(setting, "story_length")
+            else setting.get("story_length", 2000)
+        )
 
         system_prompt = """You are an expert AI Story Architect using the STORYTELLER framework.
         Create a high-level campaign blueprint ensuring narrative coherence and logical consistency.
         Structure the story using Subject-Verb-Object (SVO) events for key beats (PlotNodes).
         Define initial Narrative Entities (Characters, Locations, Items) and their starting states/relationships.
-        
+
         CRITICAL: When specifying relationships for entities, ALWAYS use lists even for single values.
         Example: "located_in": ["location_id"] NOT "located_in": "location_id"
         Example: "allies": ["char_1", "char_2"] NOT "allies": "char_1"
@@ -66,17 +74,14 @@ class StoryArchitectAgent(BaseAgent):
              - "located_in": ["loc_starting_town"]
              - "possesses": ["item_magical_key"]
              - "enemy_of": ["char_dark_lord"]
-             
+
            REMEMBER: located_in, possesses, owned_by, and ALL other relationships must map to LISTS.
            Example: Do NOT use "located_in": "loc_castle", instead use "located_in": ["loc_castle"]
-        
+
         Focus on creating a logically connected sequence of events and well-defined initial entities.
         """
 
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt)
-        ]
+        messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
 
         blueprint: CampaignBlueprint = await get_structured_output(
             self.model, messages, CampaignBlueprint

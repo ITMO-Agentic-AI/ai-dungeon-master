@@ -1,11 +1,11 @@
-from typing import Any, Dict
+from typing import Any
 from langgraph.graph import StateGraph
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from src.core.types import GameState, WorldState, Region, Culture, KeyNPC, WorldHistory
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
 from src.services.structured_output import get_structured_output
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 
 
 class WorldBible(BaseModel):
@@ -30,7 +30,7 @@ class LoreBuilderAgent(BaseAgent):
         graph.add_edge("__start__", "build_lore")
         return graph
 
-    async def build_lore(self, state: GameState) -> Dict[str, Any]:
+    async def build_lore(self, state: GameState) -> dict[str, Any]:
         """
         Step 2: Deep World-Building.
         Uses the 'narrative' blueprint from Phase 1 to generate concrete lore.
@@ -38,14 +38,14 @@ class LoreBuilderAgent(BaseAgent):
         # Retrieve Phase 1 output
         narrative = state["narrative"]
         setting = state["setting"]
-        
+
         # FIXED: theme is in Setting, not NarrativeState
         theme = setting.theme
 
-        system_prompt = """You are an expert World-Building AI. 
+        system_prompt = """You are an expert World-Building AI.
         Your task is to create a 'World Bible' that supports the provided Story Blueprint.
         The world must be game-ready, with distinct regions, conflicts, and NPCs that directly serve the plot.
-        
+
         CRITICAL REQUIREMENT: For each Culture object, you MUST provide ALL of these fields:
         - name: The culture's name (string)
         - values: List of core values (array of strings, e.g., ["honor", "family", "arcane magic"])
@@ -59,7 +59,7 @@ class LoreBuilderAgent(BaseAgent):
         Theme: {theme}
         Story Summary: {narrative.story_arc_summary}
         Major Factions/Antagonists: {', '.join(narrative.major_factions)}
-        
+
         # Requirement
         Generate a detailed World Bible containing:
         1. World Name & Tone.
@@ -74,14 +74,9 @@ class LoreBuilderAgent(BaseAgent):
         5. 2 Key NPCs per region (Total 6), with at least one tied to the Main Antagonist.
         """
 
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt)
-        ]
+        messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
 
-        bible: WorldBible = await get_structured_output(
-            self.model, messages, WorldBible
-        )
+        bible: WorldBible = await get_structured_output(self.model, messages, WorldBible)
 
         new_world_state = WorldState(
             overview=f"{bible.world_name}: {bible.world_summary} (Tone: {bible.tone})",
@@ -94,7 +89,7 @@ class LoreBuilderAgent(BaseAgent):
         # Return state update (merges into GameState['world'])
         return {"world": new_world_state}
 
-    async def answer_question(self, state: GameState) -> Dict[str, Any]:
+    async def answer_question(self, state: GameState) -> dict[str, Any]:
         """
         Phase 4b: The Lore Master (Q&A).
         When a player asks a question during gameplay,
@@ -110,14 +105,14 @@ class LoreBuilderAgent(BaseAgent):
         # Get world lore context
         world = state.get("world")
         world_overview = world.overview if world else "Unknown world"
-        
+
         # Get relevant NPCs and regions
         npcs_info = ""
         if world and world.important_npcs:
             npcs_info = "\nKey NPCs:\n" + "\n".join(
                 [f"- {npc.name}: {npc.role}" for npc in world.important_npcs[:3]]
             )
-        
+
         regions_info = ""
         if world and world.regions:
             regions_info = "\nKey Regions:\n" + "\n".join(
@@ -126,7 +121,7 @@ class LoreBuilderAgent(BaseAgent):
 
         system_prompt = """You are the Lore Keeper of this world.
         Answer player questions about the world, NPCs, history, and lore.
-        
+
         Guidelines:
         - Stay in character as a knowledgeable guide
         - Reference the world lore and NPCs provided
@@ -138,13 +133,13 @@ class LoreBuilderAgent(BaseAgent):
         World Overview: {world_overview}
         {regions_info}
         {npcs_info}
-        
+
         Player Question: {player_question}
         """
 
         messages_to_send = [
             SystemMessage(content=system_prompt),
-            HumanMessage(content=f"Answer this question based on the world lore:\n{context_block}")
+            HumanMessage(content=f"Answer this question based on the world lore:\n{context_block}"),
         ]
 
         response = await self.model.ainvoke(messages_to_send)

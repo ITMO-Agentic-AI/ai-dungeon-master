@@ -5,7 +5,7 @@ Provides fallback mechanisms when native structured output is not supported.
 
 import json
 import re
-from typing import Type, TypeVar
+from typing import TypeVar, Type
 from pydantic import BaseModel
 from langchain_core.messages import BaseMessage
 from langchain_openai import ChatOpenAI
@@ -59,9 +59,7 @@ Example format:
             content = response.content.strip()
 
             # Try to extract JSON if wrapped in markdown code blocks
-            json_match = re.search(
-                r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL
-            )
+            json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
             if json_match:
                 content = json_match.group(1)
 

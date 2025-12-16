@@ -1,8 +1,7 @@
 # src/agents/player_proxy/graph.py
 
 import uuid
-import operator
-from typing import Any, Dict, List, Literal, Annotated, Optional
+from typing import Any
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, END
@@ -16,7 +15,7 @@ import asyncio
 from src.core.types import GameState, Player, DnDCharacterStats
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
-from src.services.structured_output import get_structured_output # Assuming this utility exists
+from src.services.structured_output import get_structured_output  # Assuming this utility exists
 
 
 # Character input structure
@@ -42,7 +41,7 @@ class PlayerGenInput(BaseModel):
 
     # **No id field here, set as optional, because LLM-generated IDs are too hard to control,
     # so generate ID directly in code**
-    id: Optional[str] = Field(default=None)
+    id: str | None = Field(default=None)
 
 
 class PlayerProxyAgent(BaseAgent):
@@ -71,7 +70,7 @@ class PlayerProxyAgent(BaseAgent):
 
         graph.add_edge("create_single_character", END)
         graph.add_edge("simulate_action", END)
-        graph.add_edge("update_players", END) # NEW: Edge for player update
+        graph.add_edge("update_players", END)  # NEW: Edge for player update
 
         return graph
 
@@ -123,10 +122,10 @@ class PlayerProxyAgent(BaseAgent):
 
         # Debug log
         logger.log_event(
-            "PlayerProxy", 
-            "Debug", 
-            f"Routing Check. Players count: {len(players)}. Has Outcome: {bool(outcome)}. Outcome Data: {str(outcome)[:100]}", 
-            level="warning" # 用 warning 级别确保显眼
+            "PlayerProxy",
+            "Debug",
+            f"Routing Check. Players count: {len(players)}. Has Outcome: {bool(outcome)}. Outcome Data: {str(outcome)[:100]}",
+            level="warning",  # 用 warning 级别确保显眼
         )
 
         if outcome:
@@ -135,7 +134,7 @@ class PlayerProxyAgent(BaseAgent):
 
         return "simulate_action"
 
-    async def create_single_character(self, state: dict) -> Dict[str, Any]:
+    async def create_single_character(self, state: dict) -> dict[str, Any]:
         """Worker node for parallel character creation.
         Receives a payload dict from Send, not the full GameState.
         """
@@ -215,7 +214,7 @@ class PlayerProxyAgent(BaseAgent):
         return {"players": [final_player]}
 
     # NEW: Specific method for updating player sheets based on action outcomes during gameplay
-    async def update_players(self, state: GameState) -> Dict[str, Any]:
+    async def update_players(self, state: GameState) -> dict[str, Any]:
         """
         Phase 2d: Update Player Sheets based on action outcome during gameplay.
         Modifies player character sheets (HP, inventory, conditions, etc.) based on the result of an action.
@@ -230,7 +229,7 @@ class PlayerProxyAgent(BaseAgent):
         # Example logic: If the action involved taking damage, update the player's HP
         # This is a placeholder; you would implement specific logic based on the outcome
         # For example, update inventory, apply conditions, etc.
-        if outcome and hasattr(outcome, 'stat_changes'):
+        if outcome and hasattr(outcome, "stat_changes"):
             for change in outcome.stat_changes:
                 for player in players:
                     if player.id == change.target_id:
@@ -239,12 +238,13 @@ class PlayerProxyAgent(BaseAgent):
                             player.stats.current_hit_points = change.new_value
                             # Also update the player's current_hp if it's a separate field
                             player.current_hp = player.stats.current_hit_points
-                            print(f"  Updated {player.name}'s HP to {player.stats.current_hit_points}")
+                            print(
+                                f"  Updated {player.name}'s HP to {player.stats.current_hit_points}"
+                            )
 
         # Return the potentially updated players list
         # For now, just return the existing list unless modified by the logic above
         return {"players": players}
-
 
     # Phase 3: Gameplay Loop
     async def simulate_action(self, state: GameState, runtime: Runtime = None) -> dict[str, Any]:
@@ -266,7 +266,7 @@ class PlayerProxyAgent(BaseAgent):
         # Temporarily simulate only the first player, or the active player
         active_player = players[0]
 
-        # Compatible attribute reading for Dict and Pydantic objects
+        # Compatible attribute reading for dict and Pydantic objects
         if isinstance(active_player, dict):
             p_name = active_player.get("name", "Unknown")
             p_class = active_player.get("class_name", "Unknown")
@@ -324,15 +324,17 @@ class PlayerProxyAgent(BaseAgent):
         new_message = {"type": "human", "name": p_name, "content": action_text}
 
         return {"messages": [new_message]}
-    
+
     # New Method
-    async def run_initialization(self, state: GameState) -> Dict[str, Any]:
+    async def run_initialization(self, state: GameState) -> dict[str, Any]:
         """
         Directly run initialization logic, bypassing the internal graph router.
         This fixes the RecursionError in Phase 1.
         """
-        logger.log_event("PlayerProxy", "Init", "Forcing direct initialization (bypassing graph router)")
-        
+        logger.log_event(
+            "PlayerProxy", "Init", "Forcing direct initialization (bypassing graph router)"
+        )
+
         # 1. 准备数据 (逻辑和 route_step 一样，但是不如果不做判断)
         setting = state.get("setting")
         narrative = state.get("narrative")
@@ -341,11 +343,11 @@ class PlayerProxyAgent(BaseAgent):
         concepts = ["Warrior", "Mage", "Rogue"]
         if hasattr(setting, "player_concepts"):
             concepts = setting.player_concepts
-        
+
         story_hook = "A generic adventure"
         if hasattr(narrative, "tagline"):
             story_hook = narrative.tagline
-            
+
         locations = {}
         if hasattr(world, "locations"):
             locations = world.locations
@@ -357,16 +359,16 @@ class PlayerProxyAgent(BaseAgent):
             # 构造 payload
             payload = {"concept": concept, "story_hook": story_hook, "locations": locations}
             tasks.append(self.create_single_character(payload))
-        
+
         # 3. 等待所有生成完成
         results = await asyncio.gather(*tasks)
-        
+
         # 4. 合并结果
         all_players = []
         for res in results:
             if "players" in res:
                 all_players.extend(res["players"])
-                
+
         logger.log_event("PlayerProxy", "Init", f"Generated {len(all_players)} players directly.")
         return {"players": all_players}
 
@@ -375,6 +377,7 @@ class PlayerProxyAgent(BaseAgent):
         if not self.graph:
             self.compile()
         return await self.graph.ainvoke(state)
+
 
 # Optional: Compile the graph if needed elsewhere
 # graph = PlayerProxyAgent().build_graph().compile()

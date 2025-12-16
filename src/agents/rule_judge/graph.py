@@ -1,21 +1,17 @@
 # src/agents/rule_judge/graph.py
 
-from typing import Any, Dict
+from typing import Any
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph
-from pydantic import BaseModel
 
-from src.core.types import GameState, JudgeVerdict, EvaluationMetrics
+from src.core.types import GameState, JudgeVerdict
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
 from src.services.structured_output import get_structured_output
 from src.tools.dnd_api_tools import (
     get_spell_info,
     get_equipment_info,
-    get_class_info,
-    get_race_info,
 )
-from src.tools.game_tools import roll_dice
 
 
 class JudgeAgent(BaseAgent):
@@ -29,7 +25,7 @@ class JudgeAgent(BaseAgent):
         graph.add_edge("__start__", "evaluate_turn")
         return graph
 
-    async def evaluate_turn(self, state: GameState) -> Dict[str, Any]:
+    async def evaluate_turn(self, state: GameState) -> dict[str, Any]:
         """
         Step 6: Quality Assurance / Judgment.
         Reviews the last action resolution for consistency and fun.
@@ -146,22 +142,21 @@ class JudgeAgent(BaseAgent):
 
         messages = [
             SystemMessage(content=system_prompt),
-            HumanMessage(content=f"Evaluate this turn:\n{context_str}")
+            HumanMessage(content=f"Evaluate this turn:\n{context_str}"),
         ]
 
         verdict: JudgeVerdict = await get_structured_output(self.model, messages, JudgeVerdict)
 
         if correction_needed and verdict.is_valid:
             verdict.is_valid = False
-            verdict.feedback += f" [API Discrepancy: {', '.join(correction_suggestions)}]"
+            api_discrepancy = f"[API Discrepancy: {', '.join(correction_suggestions)}]"
             verdict.correction_suggestion = (
-                ", ".join(correction_suggestions)
+                api_discrepancy
                 if not verdict.correction_suggestion
-                else verdict.correction_suggestion
-                + f" [API Suggestion: {', '.join(correction_suggestions)}]"
+                else f"{verdict.correction_suggestion} {api_discrepancy}"
             )
 
         return {"last_verdict": verdict}
 
-    async def process(self, state: GameState) -> Dict[str, Any]:
+    async def process(self, state: GameState) -> dict[str, Any]:
         return await self.evaluate_turn(state)

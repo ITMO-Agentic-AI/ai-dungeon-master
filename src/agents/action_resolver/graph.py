@@ -1,8 +1,8 @@
-from typing import Any, Dict
+from typing import Any
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph
 
-from src.core.types import GameState, Action, ActionOutcome
+from src.core.types import GameState, ActionOutcome
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
 from src.services.structured_output import get_structured_output
@@ -19,7 +19,7 @@ class ActionResolverAgent(BaseAgent):
         graph.add_edge("__start__", "resolve_action")
         return graph
 
-    async def resolve_action(self, state: GameState) -> Dict[str, Any]:
+    async def resolve_action(self, state: GameState) -> dict[str, Any]:
         """
         Step 5: Action Resolution.
         Evaluates a player's intent against the world state and mechanics.
@@ -60,12 +60,12 @@ class ActionResolverAgent(BaseAgent):
 
         messages = [
             SystemMessage(content=system_prompt),
-            HumanMessage(content=f"Resolve this situation:\n{context_str}")
+            HumanMessage(content=f"Resolve this situation:\n{context_str}"),
         ]
 
         outcome: ActionOutcome = await get_structured_output(self.model, messages, ActionOutcome)
 
-        updated_players = []
+        # updated_players = []
         player_map = {p.id: p for p in state["players"]}
 
         for change in outcome.stat_changes:
@@ -84,5 +84,5 @@ class ActionResolverAgent(BaseAgent):
             "players": final_player_list,
         }
 
-    async def process(self, state: GameState) -> Dict[str, Any]:
+    async def process(self, state: GameState) -> dict[str, Any]:
         return await self.resolve_action(state)

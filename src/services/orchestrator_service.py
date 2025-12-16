@@ -1,10 +1,10 @@
-from typing import Literal, Dict, Any, Optional
-import asyncio
+from typing import Literal, Any
 import logging
-from datetime import datetime
+from pathlib import Path
 
 from langgraph.graph import StateGraph, END, START
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from src.core.types import GameState
 
@@ -24,9 +24,9 @@ logger = logging.getLogger(__name__)
 class OrchestratorService:
     """
     Central orchestrator for the AI Dungeon Master MAS.
-    
+
     **CRITICAL**: This orchestrator integrates with agents that have their own internal LangGraphs.
-    
+
     Phase 1: Setup Pipeline (returns to caller on completion)
     - StoryArchitectAgent.plan_narrative() -> generates narrative blueprint
     - LoreBuilderAgent.build_lore() -> generates world lore
@@ -34,7 +34,7 @@ class OrchestratorService:
     - PlayerProxyAgent.process() -> USES INTERNAL SEND() for parallel character creation
     - DungeonMasterAgent.narrate_initial() -> initial narration
     - phase1_complete -> END (exits setup phase)
-    
+
     Phase 2: Gameplay Loop (called from main.py each turn)
     - DungeonMasterAgent.plan_response() -> decides next action
     - ActionResolverAgent.resolve_action() -> handles player action
@@ -50,7 +50,15 @@ class OrchestratorService:
         """Initialize orchestrator with all agent instances and memory."""
         self.workflow = None
         self.compiled_graph = None
-        self.memory = MemorySaver()
+
+        # Store database path for async initialization
+        self.db_path = Path("src/data/storage/sessions.db")
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # AsyncSqliteSaver context manager and checkpointer
+        self._checkpointer_cm = None  # Store context manager
+        self.memory = MemorySaver()  # Temporary default until async setup
+
         self._retry_count = 0
         self._max_retry_attempts = 2
 
@@ -68,17 +76,23 @@ class OrchestratorService:
 
         logger.info("OrchestratorService initialized with all agents")
 
-    def build_pipeline(self) -> None:
+    async def build_pipeline(self) -> None:
         """
         Constructs the Master Graph connecting all agents.
-        
+
         **CRITICAL FIX**: Graph now has two separate flows:
         - Phase 1: Setup pipeline that exits after narrate_initial
         - Phase 2: Gameplay loop that runs ONE TURN and exits
-        
+
         Phase 2 now has explicit turn completion that returns to main.py,
         preventing infinite recursion within a single ainvoke() call.
         """
+        # Initialize AsyncSqliteSaver for persistent checkpoint storage
+        if self._checkpointer_cm is None:
+            self._checkpointer_cm = AsyncSqliteSaver.from_conn_string(str(self.db_path))
+            self.memory = await self._checkpointer_cm.__aenter__()
+            logger.info(f"AsyncSqliteSaver initialized with database: {self.db_path}")
+
         try:
             builder = StateGraph(GameState)
 
@@ -90,13 +104,13 @@ class OrchestratorService:
             builder.add_node("story_architect", self.architect.plan_narrative)
             builder.add_node("lore_builder", self.lore_builder.build_lore)
             builder.add_node("world_engine", self.world_engine.instantiate_world)
-            
+
             # CRITICAL FIX: PlayerProxyAgent has process() method that handles parallel creation
             # Its internal graph uses Send() to create characters in parallel
             builder.add_node("player_creator", self.player_proxy.run_initialization)
-            
+
             builder.add_node("initial_dm", self.dm.narrate_initial)
-            
+
             # NEW: Phase 1 exit node
             builder.add_node("phase1_complete", self._phase1_complete_node)
 
@@ -110,7 +124,7 @@ class OrchestratorService:
             builder.add_node("director", self.director.direct_scene)
             builder.add_node("dm_outcome", self.dm.narrate_outcome)
             builder.add_node("exit_check", self._exit_check_node)
-            
+
             # NEW: Turn completion node
             builder.add_node("turn_complete", self._turn_complete_node)
 
@@ -126,32 +140,34 @@ class OrchestratorService:
                 Check if world is already initialized (locations populated).
                 """
                 world = state.get("world")
-                
+
                 # If world has locations, we're resuming or in gameplay
                 if world and world.locations and len(world.regions) > 0:
                     logger.debug("Routing to dm_planner (world already initialized)")
                     return "dm_planner"
-                
+
                 # Otherwise start from beginning
                 logger.debug("Routing to story_architect (new game)")
                 return "story_architect"
 
-            def route_dm_plan(state: GameState) -> Literal["action_resolver", "lore_builder_question", "exit_check"]:
+            def route_dm_plan(
+                state: GameState,
+            ) -> Literal["action_resolver", "lore_builder_question", "exit_check"]:
                 """
                 Route DM's plan based on response_type.
                 DM must set: state["response_type"] to one of:
                 - "action": player performed an action
-                - "question": player asked a question  
+                - "question": player asked a question
                 - "exit": player wants to quit
                 """
                 response_type = state.get("response_type", "unknown")
-                
+
                 if not response_type:
                     logger.warning("DM response_type not set, defaulting to exit_check")
                     return "exit_check"
-                
+
                 response_type_lower = str(response_type).lower().strip()
-                
+
                 if response_type_lower == "action":
                     logger.debug("DM plan routed to action_resolver")
                     return "action_resolver"
@@ -162,7 +178,9 @@ class OrchestratorService:
                     logger.debug("DM plan routed to exit_check")
                     return "exit_check"
                 else:
-                    logger.warning(f"Unknown response_type: {response_type}. Routing to exit_check.")
+                    logger.warning(
+                        f"Unknown response_type: {response_type}. Routing to exit_check."
+                    )
                     return "exit_check"
 
             def route_judge(state: GameState) -> Literal["action_resolver", "world_engine_update"]:
@@ -173,13 +191,13 @@ class OrchestratorService:
                 """
                 verdict = state.get("last_verdict")
                 retry_count = state.get("_retry_count", 0)
-                
+
                 # Valid verdict: proceed
                 if verdict and verdict.is_valid:
                     logger.debug("Judge verdict valid. Proceeding to world_engine_update.")
                     state["_retry_count"] = 0
                     return "world_engine_update"
-                
+
                 # Invalid verdict with retries remaining: retry resolution
                 if verdict and not verdict.is_valid and retry_count < self._max_retry_attempts:
                     retry_count += 1
@@ -189,7 +207,7 @@ class OrchestratorService:
                         f"Feedback: {verdict.correction_suggestion}"
                     )
                     return "action_resolver"
-                
+
                 # Max retries exceeded: proceed anyway
                 if retry_count >= self._max_retry_attempts:
                     logger.warning(
@@ -197,7 +215,7 @@ class OrchestratorService:
                     )
                     state["_retry_count"] = 0
                     return "world_engine_update"
-                
+
                 # No verdict: proceed to update
                 logger.debug("No judge verdict. Proceeding to world_engine_update.")
                 return "world_engine_update"
@@ -250,10 +268,22 @@ class OrchestratorService:
             logger.error(f"Failed to build pipeline: {e}", exc_info=True)
             raise RuntimeError(f"Graph building failed: {e}") from e
 
+    async def cleanup(self) -> None:
+        """Cleanup resources, especially the AsyncSqliteSaver connection."""
+        if self._checkpointer_cm is not None:
+            try:
+                await self._checkpointer_cm.__aexit__(None, None, None)
+                logger.info("AsyncSqliteSaver connection closed")
+            except Exception as e:
+                logger.warning(f"Error closing AsyncSqliteSaver: {e}")
+            finally:
+                self._checkpointer_cm = None
+                self.memory = MemorySaver()  # Fallback to in-memory
+
     async def initialize_world(self, state: GameState) -> GameState:
         """
         Phase 1: Initialize the world through the setup pipeline.
-        
+
         Flow:
         1. StoryArchitectAgent creates narrative blueprint
         2. LoreBuilderAgent creates world lore
@@ -262,13 +292,13 @@ class OrchestratorService:
         5. DungeonMasterAgent provides initial narration
         6. phase1_complete marks end of setup
         7. Graph exits and returns state
-        
+
         Args:
             state: Initial GameState
-            
+
         Returns:
             GameState after setup completion
-            
+
         Raises:
             RuntimeError: If initialization fails
         """
@@ -278,13 +308,15 @@ class OrchestratorService:
 
         if not self.compiled_graph:
             logger.debug("Graph not compiled. Building pipeline...")
-            self.build_pipeline()
+            await self.build_pipeline()
 
         session_id = state["metadata"].get("session_id", "default_session")
         config = {"configurable": {"thread_id": session_id}}
 
         logger.info(f"Starting world initialization (session: {session_id})")
-        logger.info("Phase 1: Story Architect -> Lore Builder -> World Engine -> Player Creator (PARALLEL) -> Initial DM -> Complete")
+        logger.info(
+            "Phase 1: Story Architect -> Lore Builder -> World Engine -> Player Creator (PARALLEL) -> Initial DM -> Complete"
+        )
 
         # Add new part: Force cleanup state to prevent Phase 1 from reading dirty data and causing an infinite loop
         # It must be ensured that players is empty and last_outcome is None
@@ -294,23 +326,24 @@ class OrchestratorService:
         # Ensure response_type is clean
         clean_state["response_type"] = "unknown"
 
-
         try:
             # Using clean_state replace state
             final_state = await self.compiled_graph.ainvoke(clean_state, config=config)
             logger.info("World initialization completed successfully")
-            
+
             # Log what was created
             players = final_state.get("players", [])
             narrative = final_state.get("narrative")
             world = final_state.get("world")
-            
+
             logger.info(f"Created: {len(players)} characters")
             if narrative:
                 logger.info(f"Campaign: {narrative.title}")
             if world:
-                logger.info(f"World has {len(world.locations)} locations and {len(world.active_npcs)} NPCs")
-            
+                logger.info(
+                    f"World has {len(world.locations)} locations and {len(world.active_npcs)} NPCs"
+                )
+
             return final_state
 
         except Exception as e:
@@ -318,37 +351,37 @@ class OrchestratorService:
             raise RuntimeError(f"Failed to initialize world: {e}") from e
 
     async def execute_turn(
-        self, state: GameState, config: Optional[Dict[str, Any]] = None
+        self, state: GameState, config: dict[str, Any] | None = None
     ) -> GameState:
         """
         Phase 2: Execute a single game turn in the main gameplay loop.
-        
+
         This is called AFTER Phase 1 completes.
         It starts at dm_planner and runs ONE COMPLETE TURN, then exits.
         Main.py calls this once per player action.
-        
+
         Flow (single turn):
         1. DM Planner decides: action, question, or exit
         2a. If action: resolve -> judge -> world update -> director -> narration -> turn complete
         2b. If question: lore builder -> director -> narration -> turn complete
         3. Return to main.py for next player input
-        
+
         CRITICAL FIX: dm_outcome now routes to turn_complete (END),
         not back to dm_planner. This prevents infinite loops within ainvoke().
-        
+
         Args:
             state: Current GameState
             config: Optional LangGraph config (session ID, etc.)
-            
+
         Returns:
             GameState after turn execution
-            
+
         Raises:
             RuntimeError: If turn execution fails
         """
         if not self.compiled_graph:
             logger.debug("Graph not compiled. Building pipeline...")
-            self.build_pipeline()
+            await self.build_pipeline()
 
         session_id = state["metadata"].get("session_id", "default_session")
         turn = state["metadata"].get("turn", 0)
@@ -370,13 +403,13 @@ class OrchestratorService:
     def _phase1_complete_node(self, state: GameState) -> GameState:
         """
         Marks the end of Phase 1 (world initialization).
-        
+
         This node signals that setup is complete and the graph should exit.
         Called before returning to main.py for gameplay loop.
-        
+
         Args:
             state: Current GameState after initial DM narration
-            
+
         Returns:
             Unchanged GameState (ready for Phase 2 in main.py)
         """
@@ -386,17 +419,17 @@ class OrchestratorService:
     def _turn_complete_node(self, state: GameState) -> GameState:
         """
         Marks the end of a single game turn.
-        
+
         Called after dm_outcome (narration) to signal that this turn is complete.
         The graph will exit, and main.py will call execute_turn() again for the next turn.
-        
+
         This is the CRITICAL FIX for the infinite loop:
         - Before: dm_outcome -> dm_planner (infinite loop until recursion limit)
         - After: dm_outcome -> turn_complete -> END (graph exits, main.py continues)
-        
+
         Args:
             state: Current GameState after turn narration
-            
+
         Returns:
             Unchanged GameState (return to main.py)
         """
@@ -406,13 +439,13 @@ class OrchestratorService:
     def _exit_check_node(self, state: GameState) -> GameState:
         """
         Check if the game should exit based on recent messages.
-        
+
         Looks for exit keywords in the last message from the state.
         Sets state["__end__"] = True if exit is detected.
-        
+
         Args:
             state: Current GameState
-            
+
         Returns:
             Updated GameState
         """
@@ -422,11 +455,7 @@ class OrchestratorService:
         if messages:
             # Get the last message content
             last_msg = messages[-1]
-            msg_content = (
-                last_msg.content
-                if hasattr(last_msg, "content")
-                else str(last_msg)
-            )
+            msg_content = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
             msg_lower = msg_content.lower()
 
             # Check for exit keywords

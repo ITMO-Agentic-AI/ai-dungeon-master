@@ -1,4 +1,3 @@
-from typing import List, Optional
 from src.core.types import Player, WorldState
 from src.data.repositories.player_repo import PlayerRepository
 from src.data.repositories.world_repo import WorldRepository
@@ -9,13 +8,13 @@ class DataService:
         self.player_repo = PlayerRepository()
         self.world_repo = WorldRepository()
 
-    async def get_player(self, player_id: str) -> Optional[Player]:
+    async def get_player(self, player_id: str) -> Player | None:
         return await self.player_repo.get(player_id)
 
     async def save_player(self, player: Player) -> None:
         await self.player_repo.save(player)
 
-    async def list_players(self) -> List[Player]:
+    async def list_players(self) -> list[Player]:
         return await self.player_repo.list_all()
 
     async def get_world_state(self) -> WorldState:

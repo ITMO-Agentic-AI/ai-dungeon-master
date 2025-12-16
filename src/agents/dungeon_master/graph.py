@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any
 import json
 import logging
 from langgraph.graph import StateGraph
@@ -22,12 +22,12 @@ class DungeonMasterAgent(BaseAgent):
         graph.add_edge("__start__", "narrate_outcome")
         return graph
 
-    async def narrate_initial(self, state: GameState) -> Dict[str, Any]:
+    async def narrate_initial(self, state: GameState) -> dict[str, Any]:
         """
         Phase 6: The Initial Narrator.
         After the world is created and players are established,
         narrate the opening scene to set the mood and establish the initial setting.
-        
+
         IMPROVED: Pure narrative prose with naturally embedded action suggestions.
         Returns both narrative and explicit action suggestions.
         """
@@ -39,12 +39,16 @@ class DungeonMasterAgent(BaseAgent):
         if not narrative or not world or not players:
             return {
                 "messages": [AIMessage(content="The world awaits...")],
-                "action_suggestions": ["Look around", "Wait and listen", "Ask for more information"]
+                "action_suggestions": [
+                    "Look around",
+                    "Wait and listen",
+                    "Ask for more information",
+                ],
             }
 
         # Get opening location
         starting_location = None
-        if world and hasattr(world, 'locations') and world.locations:
+        if world and hasattr(world, "locations") and world.locations:
             starting_location = list(world.locations.values())[0]
 
         player_names = ", ".join([p.name for p in players])
@@ -52,22 +56,36 @@ class DungeonMasterAgent(BaseAgent):
 
         # Build location context
         location_description = ""
-        if starting_location and hasattr(starting_location, 'name') and hasattr(starting_location, 'description'):
+        if (
+            starting_location
+            and hasattr(starting_location, "name")
+            and hasattr(starting_location, "description")
+        ):
             location_description = f"{starting_location.name}: {starting_location.description}"
-        
+
         # Get NPC context
         npcs_present = []
-        if starting_location and hasattr(starting_location, 'npc_ids') and starting_location.npc_ids:
-            if world and hasattr(world, 'active_npcs'):
-                npcs_present = [world.active_npcs.get(npc_id) for npc_id in starting_location.npc_ids[:2] if npc_id in world.active_npcs]
-        
+        if (
+            starting_location
+            and hasattr(starting_location, "npc_ids")
+            and starting_location.npc_ids
+        ):
+            if world and hasattr(world, "active_npcs"):
+                npcs_present = [
+                    world.active_npcs.get(npc_id)
+                    for npc_id in starting_location.npc_ids[:2]
+                    if npc_id in world.active_npcs
+                ]
+
         npc_context = ""
         if npcs_present:
-            npc_names = ", ".join([npc.base_data.name for npc in npcs_present if npc and hasattr(npc, 'base_data')])
+            npc_names = ", ".join(
+                [npc.base_data.name for npc in npcs_present if npc and hasattr(npc, "base_data")]
+            )
             npc_context = f"NPCs present: {npc_names}"
 
         system_prompt = f"""You are the Dungeon Master for a {theme} campaign.
-        
+
 Craft an IMMERSIVE OPENING that plunges the players directly into the story - IN MEDIA RES.
 
 CRITICAL RULES:
@@ -103,27 +121,21 @@ Setting: {location_description}
 {npc_context}
         """
 
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=context_block)
-        ]
+        messages = [SystemMessage(content=system_prompt), HumanMessage(content=context_block)]
 
         response = await self.model.ainvoke(messages)
-        
+
         # Extract narrative and suggestions
         content = response.content
         narrative_text, suggestions = self._extract_narrative_and_suggestions(content)
-        
-        return {
-            "messages": [AIMessage(content=narrative_text)],
-            "action_suggestions": suggestions
-        }
 
-    async def narrate_outcome(self, state: GameState) -> Dict[str, Any]:
+        return {"messages": [AIMessage(content=narrative_text)], "action_suggestions": suggestions}
+
+    async def narrate_outcome(self, state: GameState) -> dict[str, Any]:
         """
         Phase 7b: The Narrator.
         Synthesizes the mechanical outcome into vivid prose.
-        
+
         IMPROVED: Returns both narrative and explicit action suggestions in JSON format.
         """
         outcome = state.get("last_outcome")
@@ -133,7 +145,7 @@ Setting: {location_description}
         if not outcome:
             return {
                 "messages": [AIMessage(content="The world waits for your action.")],
-                "action_suggestions": ["Look around", "Listen carefully", "Wait"]
+                "action_suggestions": ["Look around", "Listen carefully", "Wait"],
             }
 
         # Get actor's location with safe None checking
@@ -142,9 +154,9 @@ Setting: {location_description}
         if action and action.player_id in player_map:
             actor_loc_id = player_map[action.player_id].location_id
             world = state.get("world")
-            if world and hasattr(world, 'locations'):
+            if world and hasattr(world, "locations"):
                 location_obj = world.locations.get(actor_loc_id)
-                if location_obj and hasattr(location_obj, 'description'):
+                if location_obj and hasattr(location_obj, "description"):
                     actor_location = location_obj.description
 
         # Embed director guidance subtly
@@ -186,43 +198,37 @@ Outcome: {outcome.narrative_result}
 Location: {actor_location}
         """
 
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=context_block)
-        ]
+        messages = [SystemMessage(content=system_prompt), HumanMessage(content=context_block)]
 
         response = await self.model.ainvoke(messages)
-        
+
         # Extract narrative and suggestions
         content = response.content
         narrative_text, suggestions = self._extract_narrative_and_suggestions(content)
-        
-        return {
-            "messages": [AIMessage(content=narrative_text)],
-            "action_suggestions": suggestions
-        }
+
+        return {"messages": [AIMessage(content=narrative_text)], "action_suggestions": suggestions}
 
     def _extract_narrative_and_suggestions(self, content: str) -> tuple[str, list[str]]:
         """
         Extract narrative text and action suggestions from LLM response.
-        
+
         Expected format:
         [Narrative text...]
-        
+
         ```json
         {
           "action_suggestions": ["Suggestion 1", "Suggestion 2", "Suggestion 3"]
         }
         ```
-        
+
         Args:
             content: Full response from LLM
-            
+
         Returns:
             Tuple of (narrative_text, suggestions_list)
         """
         default_suggestions = ["Look around", "Wait", "Ask for clarification"]
-        
+
         try:
             # Find JSON block
             if "```json" in content:
@@ -232,23 +238,29 @@ Location: {actor_location}
                     json_str = content[start:end].strip()
                     json_data = json.loads(json_str)
                     suggestions = json_data.get("action_suggestions", default_suggestions)
-                    
+
                     # Extract narrative (everything before JSON block)
-                    narrative = content[:content.find("```json")].strip()
-                    
+                    narrative = content[: content.find("```json")].strip()
+
                     return narrative, suggestions
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning(f"Failed to parse suggestions JSON: {e}")
-        
+
         # Fallback: return full content as narrative with defaults
         return content, default_suggestions
 
-    async def plan_response(self, state: GameState) -> Dict[str, Any]:
+    async def plan_response(self, state: GameState) -> dict[str, Any]:
         """
         Phase 7a: The Dungeon Master Planner.
         Receives the player's input (action or question) and decides the next step.
         Sets a flag ('response_type') in the state to guide routing.
         """
+        # Check if response_type is already set (e.g., from Chainlit interface)
+        existing_response_type = state.get("response_type")
+        if existing_response_type and existing_response_type != "unknown":
+            # Response type already determined by caller, use it
+            return {"response_type": existing_response_type}
+        
         # Get the latest message from the player
         messages = state.get("messages", [])
         player_input = ""
@@ -257,8 +269,25 @@ Location: {actor_location}
             player_input = messages[-1].content
 
         # Determine if it's an action, a question, or an exit command
-        is_action = any(word in player_input.lower() for word in ["attack", "move", "cast", "use", "take", "open", "go", "examine", "investigate", "approach"])
-        is_question = "?" in player_input or any(word in player_input.lower() for word in ["what", "where", "who", "why", "how", "tell me"])
+        is_action = any(
+            word in player_input.lower()
+            for word in [
+                "attack",
+                "move",
+                "cast",
+                "use",
+                "take",
+                "open",
+                "go",
+                "examine",
+                "investigate",
+                "approach",
+            ]
+        )
+        is_question = "?" in player_input or any(
+            word in player_input.lower()
+            for word in ["what", "where", "who", "why", "how", "tell me"]
+        )
         is_exit = any(word in player_input.lower() for word in ["quit", "exit", "goodbye", "end"])
 
         # Set the response type in the state
@@ -271,10 +300,7 @@ Location: {actor_location}
             response_type = "exit"
 
         # Return the state update with the response type
-        return {
-            "response_type": response_type,
-            "current_player_input": player_input
-        }
+        return {"response_type": response_type, "current_player_input": player_input}
 
-    async def process(self, state: GameState) -> Dict[str, Any]:
+    async def process(self, state: GameState) -> dict[str, Any]:
         return await self.narrate_outcome(state)

@@ -1,9 +1,8 @@
-from typing import Any, Dict
+from typing import Any
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph
-from pydantic import BaseModel
 
-from src.core.types import GameState, DirectorDirectives, NarrativeState
+from src.core.types import GameState, DirectorDirectives
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
 from src.services.structured_output import get_structured_output
@@ -20,7 +19,7 @@ class DirectorAgent(BaseAgent):
         graph.add_edge("__start__", "direct_scene")
         return graph
 
-    async def direct_scene(self, state: GameState) -> Dict[str, Any]:
+    async def direct_scene(self, state: GameState) -> dict[str, Any]:
         """
         Phase 7a: The Director.
         Adjusts pacing and focus BEFORE the DM speaks.
@@ -40,16 +39,15 @@ class DirectorAgent(BaseAgent):
         Current Tension: {current_tension}
         Recent History Length: {len(history)} messages
 
-        Analyze the state. Is the scene dragging? Is it too chaotic? 
+        Analyze the state. Is the scene dragging? Is it too chaotic?
         Provide directives to guide the next narration.
         """
 
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt)
-        ]
+        messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
 
-        directives: DirectorDirectives = await get_structured_output(self.model, messages, DirectorDirectives)
+        directives: DirectorDirectives = await get_structured_output(
+            self.model, messages, DirectorDirectives
+        )
 
         # Update the narrative state with new tension
         updated_narrative = narrative.model_copy(
@@ -58,5 +56,5 @@ class DirectorAgent(BaseAgent):
 
         return {"director_directives": directives, "narrative": updated_narrative}
 
-    async def process(self, state: GameState) -> Dict[str, Any]:
+    async def process(self, state: GameState) -> dict[str, Any]:
         return await self.direct_scene(state)
