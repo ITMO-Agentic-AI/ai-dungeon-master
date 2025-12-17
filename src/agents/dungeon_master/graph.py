@@ -262,6 +262,8 @@ Location: {actor_location}
         actor_location = "Unknown"
         if action.player_id in player_map:
             actor_loc_id = player_map[action.player_id].location_id
+            # FIX: Extract world from state instead of using undefined variable
+            world = state.get("world")
             if world and hasattr(world, "locations"):
                 location_obj = world.locations.get(actor_loc_id)
                 if location_obj and hasattr(location_obj, "description"):
