@@ -7,9 +7,21 @@ from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
 from src.core.types import GameState
 from src.agents.base.agent import BaseAgent
 from src.services.model_service import model_service
-from src.core.gameplay_phase import ActionOutcomeToken  # FIX #3: Import for type hints
+from src.core.gameplay_phase import ActionOutcomeToken, ActionIntentType
 
 logger = logging.getLogger(__name__)
+
+# FIX #14: Action-specific narration hints for variety
+ACTION_NARRATION_HINTS = {
+    ActionIntentType.ATTACK: "Describe the combat maneuver, weapon impact, and enemy reaction.",
+    ActionIntentType.CAST_SPELL: "Describe magical energy, spell effects, and arcane outcomes.",
+    ActionIntentType.INVESTIGATE: "Describe what the character discovers, notices, or learns.",
+    ActionIntentType.DIALOGUE: "Describe the conversation, NPC reactions, and social dynamics.",
+    ActionIntentType.MOVE: "Describe the movement, terrain, and arrival at destination.",
+    ActionIntentType.DEFEND: "Describe defensive positioning, protection, and reaction.",
+    ActionIntentType.STEALTH: "Describe sneaking, hiding, and avoiding detection.",
+    ActionIntentType.SKILL_CHECK: "Describe the attempt, technique used, and result.",
+}
 
 
 class DungeonMasterAgent(BaseAgent):
@@ -218,17 +230,16 @@ Location: {actor_location}
 
         return {"messages": [AIMessage(content=narrative_text)], "action_suggestions": suggestions}
 
-    # FIX #2 & #3: New method that accepts outcome tokens
     async def narrate_outcome_with_tokens(
         self,
         state: GameState,
         outcome_tokens: list[ActionOutcomeToken]
     ) -> dict[str, Any]:
         """
-        FIX #2 & #3: Narrate outcome using mechanical tokens.
+        FIX #2 & #3 & #14: Narrate outcome using mechanical tokens with action-specific context.
         
         This is the PRIMARY narration method - receives dice rolls and outcomes
-        and narrates based on mechanical results, not generic descriptions.
+        and narrates based on mechanical results AND action type for variety.
         
         Args:
             state: Current GameState
@@ -247,7 +258,7 @@ Location: {actor_location}
                 "action_suggestions": ["Look around", "Listen carefully", "Wait"],
             }
 
-        # FIX #11: Build outcome-aware context from outcome tokens
+        # Build outcome-aware context from outcome tokens
         token = outcome_tokens[0]  # Use first outcome (single player for now)
         
         # Build mechanical context
@@ -257,12 +268,20 @@ Location: {actor_location}
         damage = getattr(token, "damage_dealt", 0)
         effectiveness = token.effectiveness
 
+        # FIX #14: Get action-specific narration hint for variety
+        action_hint = ACTION_NARRATION_HINTS.get(
+            token.intent_type,
+            "Describe what happens as a result of this specific action."
+        )
+        
+        # Get action type as string
+        action_type_str = token.intent_type.value if hasattr(token.intent_type, 'value') else str(token.intent_type)
+
         # Get location
         player_map = {p.id: p for p in state.get("players", [])}
         actor_location = "Unknown"
         if action.player_id in player_map:
             actor_loc_id = player_map[action.player_id].location_id
-            # FIX: Extract world from state instead of using undefined variable
             world = state.get("world")
             if world and hasattr(world, "locations"):
                 location_obj = world.locations.get(actor_loc_id)
@@ -273,25 +292,31 @@ Location: {actor_location}
         if directives:
             tone_hint = f"Tone/mood to weave in subtly: {directives.get('narrative_focus', 'ongoing')}"
 
-        # FIX #11: Include mechanical outcome in prompt
+        # FIX #14: Enhanced prompt with action-specific emphasis
         system_prompt = f"""You are the Dungeon Master.
 
-Narrate the IMMEDIATE CONSEQUENCE of the player's action in visceral, immersive prose.
+Narrate the IMMEDIATE CONSEQUENCE of the player's SPECIFIC action in visceral, immersive prose.
 
-** MECHANICAL OUTCOME (narrate based on this):**
+** PLAYER ACTION:**
+- Action Type: {action_type_str}
+- What They Did: "{action.description}"
+- Narration Focus: {action_hint}
+
+** MECHANICAL OUTCOME:**
 - Roll: {roll_total} vs DC {dc}
-- Result: {'SUCCESS' if is_success else 'FAILURE'}
+- Result: {'SUCCESS - The action achieves its intended effect' if is_success else 'FAILURE - The action does not succeed as intended'}
 - Effectiveness: {effectiveness:.0%}
-- Damage Dealt: {damage} HP
+- Damage Dealt: {damage} HP (if applicable)
 
 CRITICAL RULES:
-1. {'Show what happens as a direct result of their SUCCESSFUL action' if is_success else 'Show the consequences of their FAILED attempt'}.
-2. Make it FELT through sensory detail - sights, sounds, sensations.
-3. {tone_hint}
-4. Use BOLD for sudden changes/revelations and > blockquotes for reactions or mysterious sounds.
-5. Keep the momentum going. The next action should feel inevitable.
-6. ABSOLUTELY NO action menu format. Pure narrative continuation only.
-7. Target length: 150-250 words.
+1. Narrate SPECIFICALLY what happens when the player "{action.description}".
+2. {'Show how their action SUCCEEDS and what it achieves' if is_success else 'Show how their action FAILS and what goes wrong'}.
+3. Make it FELT through sensory detail - match the action type.
+4. {tone_hint}
+5. Use BOLD for sudden changes/revelations and > blockquotes for reactions or mysterious sounds.
+6. Keep the momentum going. The next action should feel inevitable.
+7. ABSOLUTELY NO action menu format. Pure narrative continuation only.
+8. Target length: 150-250 words.
 
 AFTER the narrative (on a new line), you MUST output a JSON block with action suggestions:
 
@@ -305,20 +330,33 @@ AFTER the narrative (on a new line), you MUST output a JSON block with action su
 }}
 ```
 
-Make suggestions concrete and action-oriented.
-Suggestions should flow naturally from the narrative and the mechanical outcome.
+Make suggestions concrete, action-oriented, and contextual to what just happened.
+The narration MUST vary based on the action type (combat vs magic vs investigation vs dialogue).
 """
 
-        context_block = f"""Action: {action.description}
-Roll Details: {token.mechanical_summary}
-Location: {actor_location}
-World Changes: {len(world_changes)} state change(s) applied
+        # FIX #14: Enhanced context block with action emphasis
+        context_block = f"""PLAYER ACTION:
+  Type: {action_type_str}
+  Description: "{action.description}"
+  
+MECHANICAL RESULT:
+  Dice Roll: {token.mechanical_summary}
+  Outcome: {'SUCCESS - Action achieves its goal' if token.meets_dc else 'FAILURE - Action does not succeed'}
+  Effectiveness: {effectiveness:.0%}
+  Damage: {damage} HP
+  
+SETTING:
+  Location: {actor_location}
+  World Changes: {len(world_changes)} state change(s) applied
+  
+NARRATE: Describe specifically and vividly what happens when the player {action.description}.
+The narration MUST be different based on whether they attacked, cast a spell, investigated, talked, etc.
         """
 
         messages = [SystemMessage(content=system_prompt), HumanMessage(content=context_block)]
 
         logger.info(
-            f"🎬 DM narrating outcome: roll {roll_total} vs DC {dc} ({'SUCCESS' if is_success else 'FAILURE'})"
+            f"🎬 DM narrating {action_type_str}: roll {roll_total} vs DC {dc} ({'SUCCESS' if is_success else 'FAILURE'})"
         )
         response = await self.model.ainvoke(messages)
 
