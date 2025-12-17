@@ -201,35 +201,58 @@ async def initialize_game_state(session_id: str, session_name: str) -> GameState
     return state
 
 
-async def load_session(session_id: str) -> GameState:
+async def load_session(session_id: str) -> GameState | None:
     """
     Load a saved game session from checkpoint.
+    
+    Returns None if session not found (graceful fallback).
 
     Args:
         session_id: Session ID to load
 
     Returns:
-        GameState: Loaded game state
-
-    Raises:
-        ValueError: If session not found
+        GameState: Loaded game state, or None if not found
     """
     logger.log_event("System", "Load", f"Loading session: {session_id}")
 
     config = {"configurable": {"thread_id": session_id}}
 
-    # Get the latest checkpoint for this session
-    snapshot = await orchestrator_service.compiled_graph.aget_state(config)
+    try:
+        # FIX: Check if compiled_graph exists before calling methods
+        if orchestrator_service.compiled_graph is None:
+            logger.log_event(
+                "System", "Load", 
+                "Session saver not configured, starting new session",
+                level="info"
+            )
+            return None  # Start new session
 
-    if not snapshot or not snapshot.values:
-        raise ValueError(f"Session '{session_id}' not found or has no saved state")
+        # Get the latest checkpoint for this session
+        snapshot = await orchestrator_service.compiled_graph.aget_state(config)
 
-    logger.log_event(
-        "System",
-        "Load",
-        f"Loaded session {session_id} at turn {snapshot.values.get('metadata', {}).get('turn', 0)}",
-    )
-    return snapshot.values
+        if not snapshot or not snapshot.values:
+            logger.log_event(
+                "System", "Load",
+                f"No prior session found for {session_id}, starting new",
+                level="info"
+            )
+            return None  # Start new session
+
+        logger.log_event(
+            "System",
+            "Load",
+            f"Loaded session {session_id} at turn {snapshot.values.get('metadata', {}).get('turn', 0)}",
+        )
+        return snapshot.values
+    
+    except (AttributeError, TypeError) as e:
+        # Graceful handling of NoneType errors
+        logger.log_event(
+            "System", "Load",
+            f"Session loading failed gracefully: {e}",
+            level="warning"
+        )
+        return None  # Start new session
 
 
 async def select_or_create_session() -> tuple[GameState, bool]:
@@ -280,7 +303,14 @@ async def select_or_create_session() -> tuple[GameState, bool]:
                 if 0 <= idx < len(sessions[:10]):
                     selected = sessions[idx]
                     state = await load_session(selected.session_id)
-                    return state, False
+                    # FIX: Check if session loaded successfully
+                    if state is not None:
+                        return state, False
+                    else:
+                        # Session load failed, start new
+                        print("❌ Failed to load session. Starting new game.")
+                        session_id, session_name = prompt_for_session_name()
+                        return await initialize_game_state(session_id, session_name), True
                 else:
                     print("❌ Invalid selection. Starting new game.")
                     session_id, session_name = prompt_for_session_name()
@@ -676,7 +706,10 @@ async def run_game_loop() -> None:
 
             # Execute turn through orchestrator
             try:
-                state = await orchestrator_service.execute_turn(state)
+                # FIX #2: execute_turn returns (game_state, gameplay_state) tuple
+                # Must unpack immediately to avoid tuple access errors
+                game_state, gameplay_state = await orchestrator_service.execute_turn(state)
+                state = game_state  # Use game_state for rest of loop
 
                 # Save session metadata after successful turn
                 session_service.update_session(session_id, turn)
