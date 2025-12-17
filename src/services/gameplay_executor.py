@@ -112,14 +112,14 @@ class GameplayExecutor:
         # ============================================================
         # STEP 1: Player Action Generation
         # ============================================================
-        logger.info("\ud83d� Step 1: Player Action Generation")
+        logger.info("📋 Step 1: Player Action Generation")
         player_actions = await self._step1_generate_actions(game_state)
         self.gameplay_state.player_actions = player_actions
 
         # ============================================================
         # STEP 2: Action Validation & Rule Adjudication
         # ============================================================
-        logger.info("\ud83d� Step 2: Action Validation & Rule Adjudication")
+        logger.info("🎲 Step 2: Action Validation & Rule Adjudication")
         outcome_tokens = await self._step2_validate_actions(
             game_state,
             player_actions,
@@ -128,10 +128,13 @@ class GameplayExecutor:
         )
         self.gameplay_state.outcome_tokens = outcome_tokens
 
+        # FIX #4: Store outcome_tokens in game_state for DM access
+        game_state["outcome_tokens"] = outcome_tokens
+
         # ============================================================
         # STEP 3: Environment & Lore Update
         # ============================================================
-        logger.info("\ud83d� Step 3: Environment & Lore Update")
+        logger.info("🌍 Step 3: Environment & Lore Update")
         state_changes = await self._step3_update_world(
             game_state,
             outcome_tokens,
@@ -140,10 +143,13 @@ class GameplayExecutor:
         )
         self.gameplay_state.world_state_deltas = state_changes
 
+        # FIX #10: Store state_changes in game_state for persistence
+        game_state["last_world_changes"] = state_changes
+
         # ============================================================
         # STEP 4: Narrative Description & Dialogue
         # ============================================================
-        logger.info("\ud83d� Step 4: Narrative Description & Dialogue")
+        logger.info("📖 Step 4: Narrative Description & Dialogue")
         narration_result = await self._step4_narrate_outcome(
             game_state,
             outcome_tokens,
@@ -154,7 +160,7 @@ class GameplayExecutor:
         # ============================================================
         # STEP 5: Director Oversight & Pacing
         # ============================================================
-        logger.info("\ud83d� Step 5: Director Oversight & Pacing")
+        logger.info("🎬 Step 5: Director Oversight & Pacing")
         pacing_result, directives = await self._step5_director_oversight(
             game_state,
             self.gameplay_state.pacing,
@@ -166,7 +172,7 @@ class GameplayExecutor:
         # ============================================================
         # STEP 6: Event Recording & Memory Sync
         # ============================================================
-        logger.info("\ud83d� Step 6: Event Recording & Memory Sync")
+        logger.info("📝 Step 6: Event Recording & Memory Sync")
         event_nodes = await self._step6_record_events(
             outcome_tokens,
             state_changes,
@@ -176,7 +182,7 @@ class GameplayExecutor:
         # ============================================================
         # STEP 7: Loop Iteration & Scene Transition
         # ============================================================
-        logger.info("\ud83d� Step 7: Loop Iteration & Scene Transition")
+        logger.info("🔄 Step 7: Loop Iteration & Scene Transition")
         scene_transition = await self._step7_check_scene_transition(
             game_state,
             self.gameplay_state.pacing,
@@ -253,6 +259,9 @@ class GameplayExecutor:
             intent_type = action["intent_type"]
             performer_id = action["performer_id"]
 
+            # FIX #6: Calculate DC based on action type (not always 10)
+            dc = self._get_dc_for_intent(intent_type)
+
             # Generate mechanical roll based on intent
             primary_roll = self._generate_roll_for_intent(
                 intent_type,
@@ -261,10 +270,17 @@ class GameplayExecutor:
             )
 
             # Check against DC (difficulty class)
-            dc = 10  # Default moderate difficulty
             meets_dc = primary_roll.total >= dc
 
-            # Create outcome token
+            # FIX #7: Calculate damage based on intent and effectiveness
+            damage_dealt = self._calculate_damage(
+                intent_type,
+                primary_roll,
+                dc,
+                meets_dc
+            )
+
+            # Create outcome token with ALL required fields
             token = ActionOutcomeToken(
                 action_id=f"action_{self.gameplay_state.turn_number}_{action_idx}",
                 performer_id=performer_id,
@@ -274,14 +290,22 @@ class GameplayExecutor:
                 difficulty_class=dc,
                 meets_dc=meets_dc,
                 mechanical_summary=f"{action['description']} (rolled {primary_roll.total} vs DC {dc})",
-                effectiveness=min(1.0, primary_roll.total / dc) if dc > 0 else 1.0,
-                is_valid=True
+                effectiveness=min(1.0, max(0.0, (primary_roll.total - dc) / dc)) if dc > 0 else 1.0,
+                is_valid=True,
+                damage_dealt=damage_dealt,  # FIX #7: Now set
+                ability_check=primary_roll,  # FIX #12: Store ability check
+                modifier_breakdown={  # FIX #12: Store modifier details
+                    "base_roll": primary_roll.rolls[0] if primary_roll.rolls else 0,
+                    "modifier": primary_roll.modifier,
+                    "total": primary_roll.total
+                }
             )
 
             outcome_tokens.append(token)
             logger.info(
                 f"✓ Validated action: {performer_id} ({intent_type.value}) "
-                f"rolled {primary_roll.total} vs DC {dc}"
+                f"rolled {primary_roll.total} vs DC {dc} | "
+                f"Success: {meets_dc} | Damage: {damage_dealt}"
             )
 
         return outcome_tokens
@@ -304,7 +328,8 @@ class GameplayExecutor:
         for token in outcome_tokens:
             if token.meets_dc:
                 # Successful action: apply effects
-                if token.damage_dealt > 0:
+                # FIX #8: Now damage_dealt is set, so this works
+                if hasattr(token, "damage_dealt") and token.damage_dealt > 0:
                     change = WorldStateChange(
                         change_type="health",
                         target_id=token.performer_id,
@@ -313,9 +338,14 @@ class GameplayExecutor:
                         reason=f"Damage from action: {token.action_id}"
                     )
                     state_changes.append(change)
+                    logger.info(
+                        f"Applied {token.damage_dealt} damage from {token.action_id}"
+                    )
             else:
                 # Failed action: potential consequence
-                logger.info(f"Action {token.action_id} failed (rolled {token.primary_roll.total} < {token.difficulty_class})")
+                logger.info(
+                    f"Action {token.action_id} failed (rolled {token.primary_roll.total} < {token.difficulty_class})"
+                )
 
         logger.info(f"Applied {len(state_changes)} world state change(s)")
         return state_changes
@@ -341,15 +371,33 @@ class GameplayExecutor:
 
         # Mock narration if DM not provided
         if dm is None:
+            # FIX #1: Generate outcome-aware narration even without DM
+            token = outcome_tokens[0] if outcome_tokens else None
+            if token and token.meets_dc:
+                narrative = "Your action succeeds! The situation changes as a result of your success."
+            elif token:
+                narrative = "Your action fails. The situation remains largely unchanged."
+            else:
+                narrative = "The action unfolds before you..."
+
             outcome = ActionOutcome(
                 success=all(t.meets_dc for t in outcome_tokens),
-                narrative_result="The action unfolds before you...",
+                narrative_result=narrative,
                 stat_changes=[],
                 new_location_id=None
             )
         else:
-            # DM narrates (already has narrate_outcome method)
-            dm_response = await dm.narrate_outcome(game_state)
+            # FIX #3: Pass outcome_tokens to DM narrate method
+            try:
+                # Try new signature with outcome_tokens
+                dm_response = await dm.narrate_outcome_with_tokens(
+                    game_state,
+                    outcome_tokens  # Pass mechanical outcomes
+                )
+            except (AttributeError, TypeError):
+                # Fallback to old signature for compatibility
+                dm_response = await dm.narrate_outcome(game_state)
+            
             # Extract or construct ActionOutcome
             outcome = ActionOutcome(
                 success=all(t.meets_dc for t in outcome_tokens),
@@ -456,7 +504,7 @@ class GameplayExecutor:
             pacing.turns_in_current_scene = 0
             logger.info("🔄 Scene transition triggered")
         else:
-            logger.info("\u23ef\ufe0f  Scene continues...")
+            logger.info("▶️  Scene continues...")
 
         return trigger
 
@@ -483,6 +531,63 @@ class GameplayExecutor:
         else:
             return ActionIntentType.UNKNOWN
 
+    def _get_dc_for_intent(self, intent_type: ActionIntentType) -> int:
+        """
+        FIX #6: Get DC based on action difficulty (not always 10)
+        
+        Args:
+            intent_type: Type of action being attempted
+            
+        Returns:
+            Difficulty Class (DC) for the action
+        """
+        dc_map = {
+            ActionIntentType.ATTACK: 12,        # Moderate - hit a target
+            ActionIntentType.INVESTIGATE: 10,   # Easy - gather information
+            ActionIntentType.DIALOGUE: 11,      # Moderate - persuade/convince
+            ActionIntentType.CAST_SPELL: 13,    # Hard - complex magic
+            ActionIntentType.MOVE: 8,           # Easy - simple movement
+            ActionIntentType.DEFEND: 10,        # Moderate - protect self
+            ActionIntentType.UNKNOWN: 10,       # Default
+        }
+        return dc_map.get(intent_type, 10)
+
+    def _calculate_damage(
+        self,
+        intent_type: ActionIntentType,
+        roll: RollResult,
+        dc: int,
+        meets_dc: bool
+    ) -> int:
+        """
+        FIX #7: Calculate damage based on intent and effectiveness
+        
+        Args:
+            intent_type: Type of action
+            roll: Roll result with modifiers
+            dc: Difficulty class
+            meets_dc: Whether action met the DC
+            
+        Returns:
+            Damage dealt (0 if miss, or amount if hit)
+        """
+        if not meets_dc:
+            return 0  # No damage on miss
+        
+        if intent_type == ActionIntentType.ATTACK:
+            # 1d6 + (roll_total - DC) for attacks
+            base_damage = 6
+            bonus = max(0, roll.total - dc)
+            return base_damage + bonus
+        elif intent_type == ActionIntentType.CAST_SPELL:
+            # 2d6 + (roll_total - DC) for spells
+            base_damage = 12
+            bonus = max(0, roll.total - dc)
+            return base_damage + bonus
+        else:
+            # Other actions deal no damage
+            return 0
+
     def _generate_roll_for_intent(
         self,
         intent_type: ActionIntentType,
@@ -507,6 +612,10 @@ class GameplayExecutor:
                 modifier = (player.stats.charisma - 10) // 2
             elif intent_type == ActionIntentType.INVESTIGATE:
                 modifier = (player.stats.wisdom - 10) // 2
+            elif intent_type == ActionIntentType.MOVE:  # FIX #12: DEX for movement
+                modifier = (player.stats.dexterity - 10) // 2 if hasattr(player.stats, "dexterity") else 0
+            elif intent_type == ActionIntentType.DEFEND:  # FIX #12: DEX for defense
+                modifier = (player.stats.dexterity - 10) // 2 if hasattr(player.stats, "dexterity") else 0
 
         # Roll d20
         rolls = [random.randint(1, 20)]
@@ -519,5 +628,7 @@ class GameplayExecutor:
             modifier=modifier,
             total=rolls[0] + modifier,
             is_advantage=False,
-            is_disadvantage=False
+            is_disadvantage=False,
+            is_critical_success=is_crit,
+            is_critical_failure=is_fumble
         )
