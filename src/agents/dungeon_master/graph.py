@@ -12,15 +12,20 @@ from src.core.gameplay_phase import ActionOutcomeToken, ActionIntentType
 logger = logging.getLogger(__name__)
 
 # FIX #14: Action-specific narration hints for variety
+# CORRECTED: Only use valid ActionIntentType enum values
 ACTION_NARRATION_HINTS = {
     ActionIntentType.ATTACK: "Describe the combat maneuver, weapon impact, and enemy reaction.",
-    ActionIntentType.CAST_SPELL: "Describe magical energy, spell effects, and arcane outcomes.",
-    ActionIntentType.INVESTIGATE: "Describe what the character discovers, notices, or learns.",
-    ActionIntentType.DIALOGUE: "Describe the conversation, NPC reactions, and social dynamics.",
-    ActionIntentType.MOVE: "Describe the movement, terrain, and arrival at destination.",
     ActionIntentType.DEFEND: "Describe defensive positioning, protection, and reaction.",
-    ActionIntentType.STEALTH: "Describe sneaking, hiding, and avoiding detection.",
+    ActionIntentType.CAST_SPELL: "Describe magical energy, spell effects, and arcane outcomes.",
     ActionIntentType.SKILL_CHECK: "Describe the attempt, technique used, and result.",
+    ActionIntentType.INTERACT: "Describe the interaction with objects, environment, or items.",
+    ActionIntentType.DIALOGUE: "Describe the conversation, NPC reactions, and social dynamics.",
+    ActionIntentType.INVESTIGATE: "Describe what the character discovers, notices, or learns.",
+    ActionIntentType.MOVE: "Describe the movement, terrain, and arrival at destination.",
+    ActionIntentType.HELP: "Describe the assistance provided and its effects.",
+    ActionIntentType.DODGE: "Describe the evasive maneuver and avoiding danger.",
+    ActionIntentType.COUNTER: "Describe the counter-attack or reactive defense.",
+    ActionIntentType.UNKNOWN: "Describe what happens as a result of this action.",
 }
 
 
