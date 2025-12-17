@@ -153,17 +153,14 @@ class OrchestratorService:
             def route_entry(state: GameState) -> Literal["story_architect", "dm_planner"]:
                 """
                 Route entry point: either start setup or jump to gameplay.
-                Check if world is already initialized (locations populated).
+                FIX: Check if world state is properly initialized with all required elements.
                 """
-                world = state.get("world")
-
-                # If world has locations, we're resuming or in gameplay
-                if world and world.locations and len(world.regions) > 0:
-                    logger.debug("Routing to dm_planner (world already initialized)")
+                # Use validation function to check full game state
+                if self._validate_world_state(state):
+                    logger.debug("State is valid. Routing to dm_planner (resuming game)")
                     return "dm_planner"
-
-                # Otherwise start from beginning
-                logger.debug("Routing to story_architect (new game)")
+                
+                logger.debug("State is invalid or incomplete. Routing to story_architect (new game)")
                 return "story_architect"
 
             def route_dm_plan(
@@ -295,6 +292,112 @@ class OrchestratorService:
             finally:
                 self._checkpointer_cm = None
                 self.memory = MemorySaver()  # Fallback to in-memory
+
+    def _validate_world_state(self, state: GameState) -> bool:
+        """
+        FIX: Validate that a GameState has a properly initialized world.
+        
+        Checks for:
+        - world exists and has locations
+        - world has at least one region
+        - players list is populated
+        - narrative/setting/lore are intact
+        
+        Args:
+            state: GameState to validate
+            
+        Returns:
+            True if state is valid and complete, False otherwise
+        """
+        try:
+            # Check world exists
+            world = state.get("world")
+            if not world:
+                logger.debug("Validation failed: world not found")
+                return False
+            
+            # Check world has locations
+            if not hasattr(world, "locations") or not world.locations:
+                logger.debug("Validation failed: world has no locations")
+                return False
+            
+            # Check we have at least one region
+            if not hasattr(world, "regions") or not world.regions:
+                logger.debug("Validation failed: world has no regions")
+                return False
+            
+            # Check players exist
+            players = state.get("players", [])
+            if not players:
+                logger.debug("Validation failed: no players found")
+                return False
+            
+            # Check narrative exists
+            narrative = state.get("narrative")
+            if not narrative:
+                logger.debug("Validation failed: no narrative found")
+                return False
+            
+            logger.debug(
+                f"State validation passed: "
+                f"{len(world.locations)} locations, "
+                f"{len(players)} players, "
+                f"world initialized"
+            )
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Error validating world state: {e}")
+            return False
+
+    async def load_session(self, session_id: str) -> GameState:
+        """
+        FIX: Load a saved game session from LangGraph checkpoint.
+        
+        This allows resuming a previous game from where it was left off.
+        
+        Args:
+            session_id: Session ID to load
+            
+        Returns:
+            GameState from the checkpoint
+            
+        Raises:
+            RuntimeError: If session not found or state is invalid
+        """
+        if not self.compiled_graph:
+            logger.debug("Graph not compiled. Building pipeline...")
+            await self.build_pipeline()
+        
+        config = {"configurable": {"thread_id": session_id}}
+        
+        try:
+            # Get state from checkpoint using LangGraph's state getter
+            state_snapshot = await self.compiled_graph.aget_state(config)
+            
+            if not state_snapshot or not state_snapshot.values:
+                logger.warning(f"No checkpoint found for session {session_id}")
+                raise RuntimeError(f"Session {session_id} not found in checkpoint storage")
+            
+            loaded_state = state_snapshot.values
+            
+            # Validate the loaded state
+            if not self._validate_world_state(loaded_state):
+                logger.error(f"Loaded state for {session_id} is invalid or incomplete")
+                raise RuntimeError(f"Session {session_id} is corrupted or incomplete")
+            
+            logger.info(
+                f"Session {session_id} loaded successfully "
+                f"(turn {loaded_state.get('metadata', {}).get('turn', 0)})"
+            )
+            return loaded_state
+            
+        except RuntimeError:
+            # Re-raise RuntimeError as-is
+            raise
+        except Exception as e:
+            logger.error(f"Failed to load session {session_id}: {e}", exc_info=True)
+            raise RuntimeError(f"Could not load session {session_id}: {e}") from e
 
     async def initialize_world(self, state: GameState) -> GameState:
         """
